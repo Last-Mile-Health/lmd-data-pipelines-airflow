@@ -16,12 +16,12 @@ x-airflow-common: &airflow-common
     AIRFLOW__WEBSERVER__RBAC: 'true'
     # SMTP for email notifications
     AIRFLOW__SMTP__SMTP_HOST: ${SMTP_HOST:-email-smtp.us-east-1.amazonaws.com}
-    AIRFLOW__SMTP__SMTP_PORT: ${SMTP_PORT:-587}
-    AIRFLOW__SMTP__SMTP_STARTTLS: 'true'
-    AIRFLOW__SMTP__SMTP_SSL: 'false'
+    AIRFLOW__SMTP__SMTP_PORT: ${SMTP_PORT:-465}
+    AIRFLOW__SMTP__SMTP_STARTTLS: 'false'
+    AIRFLOW__SMTP__SMTP_SSL: 'true'
     AIRFLOW__SMTP__SMTP_USER: ${SMTP_USER:-}
     AIRFLOW__SMTP__SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-    AIRFLOW__SMTP__SMTP_MAIL_FROM: ${SMTP_MAIL_FROM:-airflow@lmh.org}
+    AIRFLOW__SMTP__SMTP_MAIL_FROM: ${SMTP_MAIL_FROM:-lmdadmin@lastmilehealth.org}
     # AWS — local dev uses localstack or real credentials
     AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
     AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}

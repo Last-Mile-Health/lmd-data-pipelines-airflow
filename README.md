@@ -429,7 +429,7 @@ SMTP_HOST=email-smtp.us-east-1.amazonaws.com
 SMTP_PORT=587
 SMTP_USER=<SES SMTP username>        # create in AWS SES console → SMTP Settings
 SMTP_PASSWORD=<SES SMTP password>
-SMTP_MAIL_FROM=airflow@lmh.org       # must be verified in SES
+SMTP_MAIL_FROM=.org       # must be verified in SES
 ```
 
 ### Failure email includes

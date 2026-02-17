@@ -135,7 +135,7 @@ class MwaaStack(Stack):
                 "smtp.smtp_host": "",        # Set via MWAA console or update here
                 "smtp.smtp_port": "587",
                 "smtp.smtp_starttls": "true",
-                "smtp.smtp_mail_from": "airflow@lmh.org",
+                "smtp.smtp_mail_from": "lmdadmin@lastmilehealth.org",
             },
         )
 
