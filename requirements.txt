@@ -1,0 +1,19 @@
+# Airflow providers
+apache-airflow-providers-amazon==8.19.0
+apache-airflow-providers-postgres==5.11.0
+apache-airflow-providers-http==4.12.0
+
+# AWS SDK
+boto3>=1.34.0
+
+# Config
+pyyaml>=6.0.1
+python-dotenv>=1.0.0
+
+# Data handling
+requests>=2.31.0
+pandas>=2.1.0
+
+# Testing
+pytest>=7.4.0
+moto>=5.0.0

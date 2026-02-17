@@ -1,0 +1,31 @@
+-- Processed → Curated business logic SQL template
+--
+-- This SQL runs inside a Glue Spark job.
+-- Uses the transform step convention for sequential transformations.
+--
+-- Convention:
+--   -- transform_step_name
+--   SELECT ... FROM __TABLE__;
+--
+-- Each step reads from __TABLE__ (previous step's output)
+-- and produces a new __TABLE__ for the next step.
+--
+-- If you don't need multiple steps, you can write a single SELECT
+-- using "processed_data" as the source view name.
+--
+-- Example:
+--
+-- -- transform_add_categories
+-- SELECT *,
+--        CASE WHEN value > 100 THEN 'HIGH' ELSE 'LOW' END AS category
+-- FROM __TABLE__;
+--
+-- -- transform_final_select
+-- SELECT
+--     id,
+--     name,
+--     category,
+--     value,
+--     _pipeline_execution_id,
+--     _ingestion_timestamp
+-- FROM __TABLE__;

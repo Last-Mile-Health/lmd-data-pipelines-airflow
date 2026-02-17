@@ -1,0 +1,22 @@
+-- Raw → Processed cleaning SQL template
+--
+-- This SQL runs inside a Glue Spark job.
+-- The raw data is available as a temp view called "source_data".
+-- Return a SELECT with your cleaned/normalized columns.
+--
+-- Available metadata columns (added automatically before this SQL runs):
+--   _pipeline_execution_id, _ingestion_timestamp, _pipeline_name, _country
+--
+-- Example:
+--
+-- SELECT
+--     id,
+--     LOWER(TRIM(name)) AS name,
+--     CAST(value AS DOUBLE) AS value,
+--     COALESCE(category, 'UNCATEGORIZED') AS category,
+--     _pipeline_execution_id,
+--     _ingestion_timestamp,
+--     _pipeline_name,
+--     _country
+-- FROM source_data
+-- WHERE id IS NOT NULL

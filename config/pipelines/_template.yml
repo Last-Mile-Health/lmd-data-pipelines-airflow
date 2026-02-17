@@ -1,0 +1,109 @@
+# ═══════════════════════════════════════════════════════════
+# Pipeline Template
+# ═══════════════════════════════════════════════════════════
+# Copy this file, rename to {pipeline_name}.yml, and fill in.
+# The DAG factory will auto-discover it and create an Airflow DAG.
+
+pipeline:
+  name: my_pipeline                    # Unique pipeline identifier
+  description: "Description here"
+  owner: "data-team"
+  tags: ["tag1", "tag2"]
+
+# ── Data Source ──
+# type: csv | dhis2 | api | kobo_api
+source:
+  type: api
+  secret_name: null                    # Use env var ref: ${MY_SECRET_NAME} (defined in .env)
+  config:
+    # Source-specific config — varies by type:
+    #
+    # csv:
+    #   s3_prefix: "uploads/my_data/"  # S3 prefix where CSVs land
+    #   file_pattern: "*.csv"
+    #
+    # dhis2:
+    #   base_url: "https://play.dhis2.org/40.4.0"
+    #   endpoint: "/api/analytics"
+    #   dimensions: ["dx:INDICATOR_ID", "pe:LAST_12_MONTHS", "ou:ORG_UNIT"]
+    #
+    # api:
+    #   base_url: "https://api.example.com"
+    #   endpoint: "/v1/data"
+    #   method: GET
+    #   headers: {}
+    #   params: {}
+    #   pagination:
+    #     type: offset                 # offset | cursor | page
+    #     limit_param: limit
+    #     offset_param: offset
+    #     page_size: 1000
+    #
+    # kobo_api:
+    #   form_id: "FORM_ID"
+    #   export_format: json
+    #   base_url_key: KOBO_API_URL
+    #   auth_token_key: KOBO_API_TOKEN
+    #   default_country: liberia
+
+# ── Ingestion Mode ──
+ingestion:
+  mode: full                           # full | incremental
+  incremental_key: null                # column for watermark (incremental only)
+  partition_by:
+    - year
+    - month
+    - day
+
+# ── Raw Layer (Raw in S3) ──
+raw:
+  format: json                         # json | csv
+
+# ── Processed Layer (Cleaned Parquet in S3) ──
+processed:
+  glue_job_script: glue_jobs/raw_to_processed.py
+  custom_sql: null                     # sql/raw_to_processed/{name}.sql
+  deduplicate_key: null                # column to deduplicate on
+
+# ── Curated Layer (Business Logic) ──
+curated:
+  glue_job_script: glue_jobs/processed_to_curated.py
+  custom_sql: null                     # sql/processed_to_curated/{name}.sql
+
+# ── Redshift Load ──
+redshift:
+  database: null                       # country-specific Redshift database (overrides env default)
+  schema: public
+  table: my_table
+  load_mode: replace                   # replace | append | merge
+  merge_keys: []                       # required if load_mode=merge
+  distribution_key: null
+  sort_keys: []
+  pre_sql: null                        # SQL to run before load
+  post_sql: null                       # SQL to run after load
+
+# ── Schedule ──
+schedule:
+  cron: "0 6 * * *"
+  catchup: false
+  retries: 2
+  retry_delay_minutes: 5
+  timeout_minutes: 120
+
+# ── Data Quality Checks ──
+quality_checks: []
+  # - type: row_count_min
+  #   threshold: 100
+  # - type: null_check
+  #   columns: ["id", "name"]
+  # - type: custom_sql
+  #   query: "SELECT COUNT(*) FROM {table} WHERE created_at > GETDATE() - 1"
+  #   expected: 0
+
+# ── Alerts ──
+alerts:
+  email_on_start: false
+  email_on_failure: true
+  email_on_retry: false
+  email_recipients: []                   # e.g. ["data-team@lmh.org"]
+  on_sla_miss: []
