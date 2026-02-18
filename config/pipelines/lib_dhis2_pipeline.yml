@@ -7,6 +7,7 @@ pipeline:
   description: "DHIS2 DataValueSets from Liberia DHIS2 instance"
   owner: "LMD"
   tags: ["dhis2", "liberia", "routine"]
+  dag_type: dhis2                              # handled by dedicated dhis2_etl_dag.py
 
 # ── Data Source ──
 source:
@@ -26,8 +27,10 @@ source:
 
 # ── Ingestion Mode ──
 ingestion:
-  mode: full                               # full | incremental
-  incremental_key: "lastUpdated"           # used when mode=incremental
+  mode: incremental                               # full | incremental
+  cdc_strategy: rolling_window                    # full | incremental | rolling_window
+  incremental_key: "lastUpdated"                  # used by 'incremental' strategy
+  rolling_window_months: 3                        # used by 'rolling_window' strategy
   partition_by:
     - country
     - year
@@ -49,17 +52,68 @@ curated:
   glue_job_script: glue_jobs/lib_dhis2_pipeline/processed_to_curated.py
   custom_sql: sql/processed_to_curated/lib_dhis2_pipeline_transform.sql
 
+# ── Dimension Tables ──
+dimensions:
+  - name: dhis2_dim_dataelement
+    endpoint: /dataElements
+    response_key: dataElements
+    fields: "id,displayName,shortName,categoryCombo[id,displayName]"
+    table: dhis2_dim_dataelement
+    schema: public
+    columns:
+      - {name: id, type: "VARCHAR(64)", is_key: true}
+      - {name: displayname, type: "VARCHAR(512)"}
+      - {name: shortname, type: "VARCHAR(512)"}
+      - {name: categorycombo_id, type: "VARCHAR(64)"}
+      - {name: categorycombo_displayname, type: "VARCHAR(512)"}
+
+  - name: dhis2_dim_orgunit
+    endpoint: /organisationUnits
+    response_key: organisationUnits
+    fields: "id,displayName,shortName,level,path,parent[id,displayName]"
+    table: dhis2_dim_orgunit
+    schema: public
+    columns:
+      - {name: id, type: "VARCHAR(64)", is_key: true}
+      - {name: displayname, type: "VARCHAR(512)"}
+      - {name: shortname, type: "VARCHAR(512)"}
+      - {name: level, type: "INTEGER"}
+      - {name: path, type: "VARCHAR(2048)"}
+      - {name: parent_id, type: "VARCHAR(64)"}
+      - {name: parent_displayname, type: "VARCHAR(512)"}
+
+  - name: dhis2_dim_category_option
+    endpoint: /categoryOptionCombos
+    response_key: categoryOptionCombos
+    fields: "id,displayName"
+    table: dhis2_dim_category_option
+    schema: public
+    columns:
+      - {name: id, type: "VARCHAR(64)", is_key: true}
+      - {name: displayname, type: "VARCHAR(512)"}
+
+  - name: dhis2_dim_attribute_option
+    endpoint: /categoryOptionCombos
+    response_key: categoryOptionCombos
+    fields: "id,displayName"
+    table: dhis2_dim_attribute_option
+    schema: public
+    columns:
+      - {name: id, type: "VARCHAR(64)", is_key: true}
+      - {name: displayname, type: "VARCHAR(512)"}
+
 # ── Redshift Load ──
 redshift:
   database: liberia
   schema: public
   table: dhis2_data_values
-  load_mode: replace                       # replace | append | merge
-  merge_keys: []
+  load_mode: merge                         # replace | append | merge
+  merge_keys: ["dataelement", "period", "orgunit", "categoryoptioncombo", "attributeoptioncombo"]
+  distribution_style: AUTO
   distribution_key: null
-  sort_keys: ["period"]
+  sort_keys: ["period", "dataelement", "orgunit"]
   pre_sql: null
-  post_sql: null
+  post_sql: sql/redshift/views/dhis2_vw_bi_datavalue.sql
 
 # ── Schedule ──
 schedule:

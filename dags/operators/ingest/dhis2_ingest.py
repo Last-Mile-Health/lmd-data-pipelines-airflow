@@ -52,9 +52,21 @@ def run(config: Dict, env_config: Dict, load_params: Dict) -> Dict:
             if isinstance(params["dimension"], list):
                 params["dimension"].append(dim)
 
-    # Incremental: filter by period or lastUpdated
-    if load_params["mode"] == "incremental" and load_params.get("start_after"):
-        params["lastUpdated"] = load_params["start_after"]
+    # CDC strategy-aware param handling
+    cdc_strategy = load_params.get("cdc_strategy", load_params.get("mode", "full"))
+
+    if cdc_strategy == "incremental":
+        # Remove static period so all periods are scanned; filter by lastUpdated
+        params.pop("period", None)
+        if load_params.get("start_after"):
+            params["lastUpdated"] = load_params["start_after"]
+
+    elif cdc_strategy == "rolling_window":
+        # Replace static period with computed period list (repeated params)
+        params.pop("period", None)
+        period_list = load_params.get("period_list", [])
+        if period_list:
+            params["period"] = period_list
 
     # Fetch data
     url = f"{base_url}{endpoint}"

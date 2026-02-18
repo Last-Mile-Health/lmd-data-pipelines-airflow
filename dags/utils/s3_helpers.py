@@ -28,6 +28,28 @@ def build_raw_path(
     )
 
 
+def build_dimension_raw_path(
+    country: str,
+    pipeline_name: str,
+    dim_name: str,
+    execution_id: str,
+    ingestion_time: str,
+) -> str:
+    """
+    Build S3 key for dimension data in Raw layer.
+
+    Format: {country}/{pipeline}/dimensions/{dim_name}/{YYYY}/{MM}/{DD}/{execution_id}/
+
+    Example: liberia/lib_dhis2_pipeline/dimensions/dhis2_dim_orgunit/2026/02/18/abc-123/
+    """
+    ts = datetime.fromisoformat(ingestion_time)
+    return (
+        f"{country}/{pipeline_name}/dimensions/{dim_name}/"
+        f"{ts.strftime('%Y/%m/%d')}/"
+        f"{execution_id}/"
+    )
+
+
 def write_json_to_s3(
     bucket: str,
     key: str,
@@ -46,6 +68,35 @@ def write_json_to_s3(
     """
     s3 = boto3.client("s3")
     body = json.dumps(data, default=str, ensure_ascii=False)
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=body.encode("utf-8"),
+        ContentType="application/json",
+    )
+    return f"s3://{bucket}/{key}"
+
+
+def write_jsonl_to_s3(
+    bucket: str,
+    key: str,
+    data: list,
+) -> str:
+    """
+    Write data as newline-delimited JSON (JSONL) to S3.
+    Each record is a separate line — required for Redshift COPY JSON 'auto'.
+
+    Args:
+        bucket: S3 bucket name
+        key: S3 object key
+        data: List of dicts to serialize
+
+    Returns:
+        Full S3 path (s3://bucket/key)
+    """
+    s3 = boto3.client("s3")
+    lines = [json.dumps(record, default=str, ensure_ascii=False) for record in data]
+    body = "\n".join(lines)
     s3.put_object(
         Bucket=bucket,
         Key=key,

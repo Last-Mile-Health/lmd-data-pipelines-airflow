@@ -7,12 +7,15 @@ Supports three load modes:
     - append:  COPY directly (new rows added)
     - merge:   COPY into staging, DELETE+INSERT (upsert by merge keys)
 
+Also supports dimension table loading (JSON → TRUNCATE + COPY).
+
 Uses Redshift Data API (async) for serverless workgroups.
 """
+import os
 import time
 import json
 import boto3
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 
 def execute_load(
@@ -53,6 +56,8 @@ def execute_load(
         schema, table,
         env_config["glue_database"], config["pipeline"]["name"],
         env_config["aws_region"],
+        sort_keys=redshift_cfg.get("sort_keys"),
+        distribution_style=redshift_cfg.get("distribution_style"),
     )
 
     # Run pre-SQL if configured
@@ -74,9 +79,15 @@ def execute_load(
     else:
         raise ValueError(f"Unknown load_mode: {load_mode}")
 
-    # Run post-SQL if configured
+    # Run post-SQL if configured (supports inline SQL or file path starting with sql/)
     post_sql = redshift_cfg.get("post_sql")
     if post_sql:
+        if post_sql.startswith("sql/"):
+            sql_file_path = os.path.join(
+                os.path.dirname(__file__), "..", "..", post_sql
+            )
+            with open(sql_file_path) as f:
+                post_sql = f.read()
         _execute_sql(client, workgroup, database, secret_arn, post_sql)
 
     # Compute max watermark from the loaded data
@@ -124,7 +135,11 @@ def _glue_type_to_redshift(glue_type):
     return "VARCHAR(65535)"
 
 
-def _ensure_table_exists(client, workgroup, database, secret_arn, schema, table, glue_database, pipeline_name, region):
+def _ensure_table_exists(
+    client, workgroup, database, secret_arn,
+    schema, table, glue_database, pipeline_name, region,
+    sort_keys=None, distribution_style=None,
+):
     """Create the Redshift table from the Glue catalog schema if it doesn't exist."""
     # Check if table already exists
     check_sql = f"""
@@ -161,7 +176,14 @@ def _ensure_table_exists(client, workgroup, database, secret_arn, schema, table,
         rs_type = _glue_type_to_redshift(col["Type"])
         col_defs.append(f'    "{col["Name"]}" {rs_type}')
 
-    ddl = f'CREATE TABLE IF NOT EXISTS {schema}.{table} (\n{",".join(col_defs)}\n);'
+    # Distribution and sort key clauses
+    table_props = ""
+    if distribution_style:
+        table_props += f"\nDISTSTYLE {distribution_style}"
+    if sort_keys:
+        table_props += f"\nSORTKEY ({', '.join(sort_keys)})"
+
+    ddl = f'CREATE TABLE IF NOT EXISTS {schema}.{table} (\n{",".join(col_defs)}\n){table_props};'
     print(f"Auto-creating Redshift table {schema}.{table} from Glue catalog")
     _execute_sql(client, workgroup, database, secret_arn, ddl)
 
@@ -174,7 +196,7 @@ def _get_redshift_secret(secret_name, region):
 
 
 def _load_replace(client, workgroup, database, secret_arn, schema, table, s3_path, iam_role):
-    """TRUNCATE + COPY."""
+    """TRUNCATE + COPY + ANALYZE."""
     sql = f"""
         BEGIN;
         TRUNCATE TABLE {schema}.{table};
@@ -185,6 +207,7 @@ def _load_replace(client, workgroup, database, secret_arn, schema, table, s3_pat
         COMMIT;
     """
     _execute_sql(client, workgroup, database, secret_arn, sql)
+    _execute_sql(client, workgroup, database, secret_arn, f"ANALYZE {schema}.{table};")
 
 
 def _load_append(client, workgroup, database, secret_arn, schema, table, s3_path, iam_role):
@@ -247,6 +270,55 @@ def _get_max_watermark(client, workgroup, database, secret_arn, schema, table, i
         print(f"[CDC] Warning: Could not fetch max watermark: {e}")
 
     return None
+
+
+def ensure_dimension_table_exists(
+    client, workgroup, database, secret_arn,
+    schema: str, table: str, columns: List[Dict],
+):
+    """Create a dimension table from YAML column definitions if it doesn't exist."""
+    check_sql = f"""
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = '{schema}' AND table_name = '{table}'
+    """
+    result = _execute_sql(client, workgroup, database, secret_arn, check_sql)
+    if result.get("ResultRows", 0) > 0:
+        return
+
+    col_defs = []
+    for col in columns:
+        col_defs.append(f'    "{col["name"]}" {col["type"]}')
+
+    ddl = f'CREATE TABLE IF NOT EXISTS {schema}.{table} (\n{", ".join(col_defs)}\n);'
+    print(f"Auto-creating dimension table {schema}.{table}")
+    _execute_sql(client, workgroup, database, secret_arn, ddl)
+
+
+def load_dimension_json(
+    client, workgroup, database, secret_arn,
+    schema: str, table: str, s3_path: str, iam_role: str,
+    columns: List[Dict],
+):
+    """TRUNCATE + COPY FROM JSON + ANALYZE for a dimension table."""
+    ensure_dimension_table_exists(
+        client, workgroup, database, secret_arn,
+        schema, table, columns,
+    )
+
+    sql = f"""
+        BEGIN;
+        TRUNCATE TABLE {schema}.{table};
+        COPY {schema}.{table}
+        FROM '{s3_path}'
+        IAM_ROLE '{iam_role}'
+        JSON 'auto ignorecase'
+        TRUNCATECOLUMNS
+        REGION AS 'us-east-1';
+        COMMIT;
+    """
+    _execute_sql(client, workgroup, database, secret_arn, sql)
+    _execute_sql(client, workgroup, database, secret_arn, f"ANALYZE {schema}.{table};")
+    print(f"Dimension {schema}.{table} loaded from {s3_path}")
 
 
 def _execute_sql(client, workgroup, database, secret_arn, sql):

@@ -1,17 +1,23 @@
 """
-DAG Factory — Generates one Airflow DAG per pipeline YAML config.
+Dedicated DHIS2 ETL DAG — Star-schema pipeline with dimension loading.
 
-Flow per pipeline:
-    resolve_load_params → ingest_to_raw → raw_to_processed (Glue)
-        → processed_to_curated (Glue) → crawl_curated (Glue Crawler)
-        → load_to_redshift → update_watermark → run_quality_checks
+Flow:
+    resolve_load_params
+        ├── load_dimensions (parallel per dimension)
+        └── ingest_to_raw → raw_to_processed (Glue)
+                → processed_to_curated (Glue) → crawl_curated (Glue Crawler)
+                    → load_to_redshift  ← waits for dims + crawl
+                        → post_sql (BI view) + ANALYZE
+                            → update_watermark → run_quality_checks
+
+Only instantiated if config/pipelines/lib_dhis2_pipeline.yml exists
+and has pipeline.dag_type == 'dhis2'.
 """
 import os
 import uuid
 from datetime import datetime, timedelta
 
 from airflow.decorators import dag, task
-from airflow.models import Variable
 from airflow.utils.email import send_email
 
 from utils.config_loader import load_all_pipeline_configs, get_env_config
@@ -38,7 +44,7 @@ def _on_failure_callback(context, recipients, pipeline_name):
 
 
 def _on_start_callback(context, recipients, pipeline_name):
-    """Send email notification when DAG run starts (called on first task)."""
+    """Send email notification when DAG run starts."""
     send_email(
         to=recipients,
         subject=f"[STARTED] Pipeline: {pipeline_name}",
@@ -51,13 +57,14 @@ def _on_start_callback(context, recipients, pipeline_name):
     )
 
 
-def create_etl_dag(pipeline_name: str, config: dict):
-    """Create a full ETL DAG from a pipeline YAML config."""
+def create_dhis2_dag(pipeline_name: str, config: dict):
+    """Create the dedicated DHIS2 ETL DAG with dimension loading."""
 
     env = get_env_config()
     schedule_cfg = config.get("schedule", {})
     alerts_cfg = config.get("alerts", {})
     email_recipients = alerts_cfg.get("email_recipients", [])
+    dimensions_cfg = config.get("dimensions", [])
 
     default_args = {
         "owner": config["pipeline"].get("owner", "data-team"),
@@ -66,7 +73,6 @@ def create_etl_dag(pipeline_name: str, config: dict):
         "execution_timeout": timedelta(minutes=schedule_cfg.get("timeout_minutes", 120)),
     }
 
-    # Email notifications
     if email_recipients:
         if alerts_cfg.get("email_on_failure", True):
             default_args["on_failure_callback"] = lambda ctx: _on_failure_callback(ctx, email_recipients, pipeline_name)
@@ -80,11 +86,11 @@ def create_etl_dag(pipeline_name: str, config: dict):
         schedule=schedule_cfg.get("cron"),
         start_date=datetime(2024, 1, 1),
         catchup=schedule_cfg.get("catchup", False),
-        tags=config["pipeline"].get("tags", []),
+        tags=config["pipeline"].get("tags", []) + ["star-schema"],
         max_active_runs=1,
-        doc_md=f"""### ETL Pipeline: `{pipeline_name}`\n\n{config['pipeline'].get('description', '')}""",
+        doc_md=f"### DHIS2 Star-Schema Pipeline: `{pipeline_name}`\n\n{config['pipeline'].get('description', '')}",
     )
-    def etl_pipeline():
+    def dhis2_pipeline():
 
         # ── TASK 1: Determine load boundaries ──────────────────
         _start_cb = None
@@ -93,16 +99,17 @@ def create_etl_dag(pipeline_name: str, config: dict):
 
         @task(on_execute_callback=_start_cb)
         def resolve_load_params(**context):
-            """
-            Determine what data to pull.
-            - full: no boundaries, pull everything
-            - incremental: read watermark from DynamoDB, set start boundary
-            """
+            from dateutil.relativedelta import relativedelta
             from utils.cdc import get_watermark, compute_boundaries
 
-            # Allow runtime override via dag_run.conf
             conf = context["dag_run"].conf or {}
-            mode = conf.get("mode_override", config["ingestion"]["mode"])
+            ingestion_cfg = config["ingestion"]
+
+            # CDC strategy: runtime override > YAML cdc_strategy > legacy mode fallback
+            cdc_strategy = conf.get(
+                "cdc_strategy_override",
+                ingestion_cfg.get("cdc_strategy", ingestion_cfg.get("mode", "full")),
+            )
 
             execution_id = str(uuid.uuid4())
             ingestion_time = datetime.utcnow().isoformat()
@@ -110,63 +117,103 @@ def create_etl_dag(pipeline_name: str, config: dict):
             params = {
                 "execution_id": execution_id,
                 "ingestion_time": ingestion_time,
-                "mode": mode,
+                "cdc_strategy": cdc_strategy,
                 "pipeline_name": pipeline_name,
                 "country": conf.get("country", config["source"]["config"].get("default_country", "global")),
             }
 
-            if mode == "incremental":
+            if cdc_strategy == "incremental":
+                params["mode"] = "incremental"
                 watermark = get_watermark(
                     pipeline_name=pipeline_name,
                     table_name=env["metadata_table"],
                 )
                 boundaries = compute_boundaries(
                     watermark=watermark,
-                    incremental_key=config["ingestion"].get("incremental_key"),
+                    incremental_key=ingestion_cfg.get("incremental_key"),
                 )
                 params.update(boundaries)
-                print(f"[CDC] Watermark from DynamoDB: {watermark}")
-                print(f"[CDC] Boundaries: start_after={boundaries.get('start_after')}")
-            else:
+                print(f"[CDC] Strategy=incremental | Watermark from DynamoDB: {watermark}")
+
+            elif cdc_strategy == "rolling_window":
+                params["mode"] = "rolling_window"
                 params["watermark"] = None
-                print(f"[CDC] Mode=full — no watermark filter")
+                window_months = ingestion_cfg.get("rolling_window_months", 3)
+                now = datetime.utcnow()
+                period_list = []
+                for i in range(window_months):
+                    dt = now - relativedelta(months=i)
+                    period_list.append(dt.strftime("%Y%m"))
+                params["period_list"] = period_list
+                print(f"[CDC] Strategy=rolling_window | Periods: {period_list}")
+
+            else:
+                # full (default)
+                params["mode"] = "full"
+                params["watermark"] = None
+                print(f"[CDC] Strategy=full — static params, no watermark filter")
 
             return params
 
-        # ── TASK 2: Ingest from source → Raw (S3/JSON) ────────
+        # ── TASK 2a: Load dimensions (parallel) ───────────────
+        @task
+        def load_single_dimension(dim_cfg: dict, load_params: dict, **context):
+            """Fetch one DHIS2 metadata endpoint and load into Redshift dimension table."""
+            import json
+            import boto3
+            from operators.ingest.dhis2_metadata_ingest import run_dimension
+            from operators.redshift_load import (
+                load_dimension_json,
+                _get_redshift_secret,
+            )
+
+            # 1. Ingest metadata to S3
+            result = run_dimension(
+                dimension_cfg=dim_cfg,
+                source_cfg=config["source"]["config"],
+                secret_name=config["source"].get("secret_name"),
+                env_config=env,
+                load_params=load_params,
+            )
+
+            if result["record_count"] == 0:
+                print(f"[DIM] {dim_cfg['name']}: no records — skipping Redshift load")
+                return result
+
+            # 2. Load into Redshift
+            redshift_cfg = config["redshift"]
+            database = redshift_cfg.get("database") or env["redshift_database"]
+            secret_arn, secret_values = _get_redshift_secret(
+                env["redshift_secret_name"], env["aws_region"]
+            )
+            workgroup = secret_values["workgroupName"]
+            client = boto3.client("redshift-data", region_name=env["aws_region"])
+
+            load_dimension_json(
+                client=client,
+                workgroup=workgroup,
+                database=database,
+                secret_arn=secret_arn,
+                schema=dim_cfg.get("schema", "public"),
+                table=dim_cfg["table"],
+                s3_path=result["s3_path"],
+                iam_role=env["redshift_iam_role_arn"],
+                columns=dim_cfg["columns"],
+            )
+
+            return result
+
+        # ── TASK 2b: Ingest fact data → Raw (S3/JSON) ─────────
         @task
         def ingest_to_raw(load_params: dict, **context):
-            """
-            Route to the correct ingestor based on source.type.
-            Writes raw data (JSON) to Raw layer in S3.
-            Returns S3 path of ingested data.
-            """
-            from operators.ingest.csv_ingest import run as csv_run
             from operators.ingest.dhis2_ingest import run as dhis2_run
-            from operators.ingest.api_ingest import run as api_run
-            from operators.ingest.kobo_ingest import run as kobo_run
 
-            ingestors = {
-                "csv": csv_run,
-                "dhis2": dhis2_run,
-                "api": api_run,
-                "kobo_api": kobo_run,
-            }
-
-            source_type = config["source"]["type"]
-            ingestor = ingestors.get(source_type)
-            if not ingestor:
-                raise ValueError(f"Unknown source type: {source_type}")
-
-            result = ingestor(
+            result = dhis2_run(
                 config=config,
                 env_config=env,
                 load_params=load_params,
             )
 
-            print(f'-----results', result)
-
-            # Short-circuit: no new data to process
             if result.get("record_count", 0) == 0:
                 from airflow.exceptions import AirflowSkipException
                 raise AirflowSkipException("No new records to process — skipping downstream tasks")
@@ -176,7 +223,6 @@ def create_etl_dag(pipeline_name: str, config: dict):
         # ── TASK 3: Raw → Processed (Glue Spark) ──────────────
         @task
         def trigger_raw_to_processed(ingest_result: dict, load_params: dict, **context):
-            """Start Glue job for Raw→Processed transformation (fully dynamic, no custom SQL)."""
             import boto3
 
             glue_client = boto3.client("glue", region_name=env["aws_region"])
@@ -188,16 +234,16 @@ def create_etl_dag(pipeline_name: str, config: dict):
                 custom_sql_path = f"s3://{env['assets_bucket']}/{sql_file}"
 
             glue_args = {
-                    "--source_path": ingest_result["s3_path"],
-                    "--target_bucket": env["processed_bucket"],
-                    "--pipeline_name": pipeline_name,
-                    "--execution_id": load_params["execution_id"],
-                    "--country": load_params["country"],
-                    "--ingestion_time": load_params["ingestion_time"],
-                    "--custom_sql_path": custom_sql_path,
-                    "--load_mode": load_params["mode"],
-                    "--metadata_table": env["metadata_table"],
-                    "--source_format": config.get("raw", {}).get("format", "json"),
+                "--source_path": ingest_result["s3_path"],
+                "--target_bucket": env["processed_bucket"],
+                "--pipeline_name": pipeline_name,
+                "--execution_id": load_params["execution_id"],
+                "--country": load_params["country"],
+                "--ingestion_time": load_params["ingestion_time"],
+                "--custom_sql_path": custom_sql_path,
+                "--load_mode": load_params["mode"],
+                "--metadata_table": env["metadata_table"],
+                "--source_format": config.get("raw", {}).get("format", "json"),
             }
 
             dedup_key = config.get("processed", {}).get("deduplicate_key")
@@ -210,7 +256,6 @@ def create_etl_dag(pipeline_name: str, config: dict):
             )
             job_run_id = response["JobRunId"]
 
-            # Poll until complete
             import time
             while True:
                 status = glue_client.get_job_run(JobName=job_name, RunId=job_run_id)
@@ -222,7 +267,6 @@ def create_etl_dag(pipeline_name: str, config: dict):
                     raise RuntimeError(f"Glue job {job_name} failed: {error}")
                 time.sleep(30)
 
-            # Return processed path
             now = datetime.fromisoformat(load_params["ingestion_time"])
             processed_key = (
                 f"{load_params['country']}/{pipeline_name}/"
@@ -237,7 +281,6 @@ def create_etl_dag(pipeline_name: str, config: dict):
         # ── TASK 4: Processed → Curated (Glue Spark) ──────────
         @task
         def trigger_processed_to_curated(processed_result: dict, load_params: dict, **context):
-            """Start Glue job for Processed→Curated transformation (business logic via custom SQL)."""
             import boto3
 
             glue_client = boto3.client("glue", region_name=env["aws_region"])
@@ -285,23 +328,20 @@ def create_etl_dag(pipeline_name: str, config: dict):
                 "curated_key": curated_key,
             }
 
-        # ── TASK 5a: Crawl Curated S3 (Glue Crawler) ────────────
+        # ── TASK 5a: Crawl Curated S3 (Glue Crawler) ──────────
         @task
         def crawl_curated(curated_result: dict, load_params: dict, **context):
-            """Run Glue Crawler on curated S3 path to register/update schema in Glue Data Catalog."""
             import boto3
             import time as _time
 
             glue_client = boto3.client("glue", region_name=env["aws_region"])
             crawler_name = f"{env['prefix']}-{pipeline_name}-curated-crawler"
 
-            # Point crawler at the curated S3 path for this pipeline/country
             s3_target = (
                 f"s3://{env['curated_bucket']}/"
                 f"{load_params['country']}/{pipeline_name}/"
             )
 
-            # Create or update the crawler
             crawler_config = {
                 "Name": crawler_name,
                 "Role": f"{env['prefix']}-glue-role",
@@ -321,10 +361,8 @@ def create_etl_dag(pipeline_name: str, config: dict):
             except glue_client.exceptions.EntityNotFoundException:
                 glue_client.create_crawler(**crawler_config)
 
-            # Start the crawler
             glue_client.start_crawler(Name=crawler_name)
 
-            # Poll until complete
             while True:
                 resp = glue_client.get_crawler(Name=crawler_name)
                 state = resp["Crawler"]["State"]
@@ -334,10 +372,11 @@ def create_etl_dag(pipeline_name: str, config: dict):
 
             return curated_result
 
-        # ── TASK 5b: Curated → Redshift ─────────────────────────
+        # ── TASK 5b: Load fact table to Redshift ───────────────
+        # Waits for both crawl_curated AND all load_dimensions (via >> ordering)
         @task
         def load_to_redshift(curated_result: dict, load_params: dict, **context):
-            """Load curated data from S3 into Redshift."""
+            """Load curated fact data into Redshift. Runs after dimensions are loaded."""
             from operators.redshift_load import execute_load
 
             return execute_load(
@@ -347,10 +386,9 @@ def create_etl_dag(pipeline_name: str, config: dict):
                 load_params=load_params,
             )
 
-        # ── TASK 6: Update watermark ───────────────────────────
+        # ── TASK 6: Update watermark ──────────────────────────
         @task
         def update_watermark(load_result: dict, load_params: dict, **context):
-            """Persist new high watermark after successful load."""
             from utils.cdc import set_watermark
 
             if load_params["mode"] == "incremental":
@@ -363,10 +401,9 @@ def create_etl_dag(pipeline_name: str, config: dict):
                 )
             return {"status": "watermark_updated"}
 
-        # ── TASK 7: Data quality checks ────────────────────────
+        # ── TASK 7: Data quality checks ───────────────────────
         @task
         def run_quality_checks(load_params: dict, **context):
-            """Run configured quality checks against Redshift."""
             from utils.quality import run_checks
 
             checks = config.get("quality_checks", [])
@@ -379,24 +416,35 @@ def create_etl_dag(pipeline_name: str, config: dict):
                 env_config=env,
             )
 
-        # ── Wire the DAG ──────────────────────────────────────
+        # ── Wire the DAG ─────────────────────────────────────
         params = resolve_load_params()
+
+        # Dimension loading (parallel) — runs alongside fact ingest
+        dim_results = [
+            load_single_dimension(dim_cfg, params)
+            for dim_cfg in dimensions_cfg
+        ]
+
+        # Fact pipeline: ingest → process → curate → crawl
         ingested = ingest_to_raw(params)
         processed = trigger_raw_to_processed(ingested, params)
         curated = trigger_processed_to_curated(processed, params)
         crawled = crawl_curated(curated, params)
+
+        # Fact load waits for both crawled data AND all dimensions
         loaded = load_to_redshift(crawled, params)
+        # Set dimension tasks as upstream ordering dependencies
+        for dim_result in dim_results:
+            dim_result >> loaded
         updated = update_watermark(loaded, params)
         updated >> run_quality_checks(params)
 
-    return etl_pipeline()
+    return dhis2_pipeline()
 
 
 # ═══════════════════════════════════════════════════════════
-# Auto-generate DAGs from all YAML configs
+# Auto-generate DHIS2 DAGs from YAML configs with dag_type: dhis2
 # ═══════════════════════════════════════════════════════════
 for _name, _cfg in load_all_pipeline_configs().items():
-    # Skip pipelines handled by dedicated DAGs (e.g. dag_type: dhis2)
-    if _cfg.get("pipeline", {}).get("dag_type"):
-        continue
-    globals()[f"etl_{_name}"] = create_etl_dag(_name, _cfg)
+    if _cfg.get("pipeline", {}).get("dag_type") == "dhis2":
+        globals()[f"etl_{_name}"] = create_dhis2_dag(_name, _cfg)
