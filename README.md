@@ -85,7 +85,8 @@ resolve_load_params → ingest_to_raw → raw_to_processed (Glue)
 ├── Makefile                        Common commands
 │
 ├── config/pipelines/               One YAML per pipeline (auto-discovered)
-│   ├── ifi.yml                     IFI pipeline config
+│   ├── lib_ifi_pipeline.yml        IFI pipeline config
+│   ├── lib_dhis2_pipeline.yml      DHIS2 pipeline config
 │   └── _template.yml               Copy this to add a new pipeline
 │
 ├── dags/
@@ -104,16 +105,24 @@ resolve_load_params → ingest_to_raw → raw_to_processed (Glue)
 │       └── quality.py             Post-load data quality checks
 │
 ├── glue_jobs/                      PySpark scripts (deployed to S3)
-│   ├── raw_to_processed.py         JSON → clean Parquet + custom SQL
-│   └── processed_to_curated.py     Parquet → business logic + custom SQL
+│   ├── raw_to_processed.py         Generic fallback: JSON → clean Parquet + custom SQL
+│   ├── processed_to_curated.py     Generic fallback: Parquet → business logic + custom SQL
+│   ├── lib_ifi_pipeline/           Per-pipeline Glue scripts
+│   │   ├── raw_to_processed.py
+│   │   └── processed_to_curated.py
+│   └── lib_dhis2_pipeline/
+│       ├── raw_to_processed.py
+│       └── processed_to_curated.py
 │
 ├── sql/                            Custom SQL transformations
 │   ├── raw_to_processed/
-│   │   ├── ifi_clean.sql           IFI cleaning SQL
-│   │   └── _template.sql           Template for new pipelines
+│   │   ├── lib_ifi_pipeline_clean.sql       IFI cleaning SQL
+│   │   ├── lib_dhis2_pipeline_clean.sql     DHIS2 cleaning SQL
+│   │   └── _template.sql                    Template for new pipelines
 │   ├── processed_to_curated/
-│   │   ├── ifi_transform.sql       IFI business logic SQL
-│   │   └── _template.sql           Template for new pipelines
+│   │   ├── lib_ifi_pipeline_transform.sql   IFI business logic SQL
+│   │   ├── lib_dhis2_pipeline_transform.sql DHIS2 business logic SQL
+│   │   └── _template.sql                    Template for new pipelines
 │   └── redshift/                   DDL, migrations, quality check SQL
 │
 ├── plugins/api/
@@ -232,7 +241,7 @@ cp sql/processed_to_curated/_template.sql sql/processed_to_curated/my_pipeline.s
 Add the pipeline name to `infrastructure/app.py`:
 
 ```python
-PIPELINE_NAMES = ["ifi", "my_pipeline"]
+PIPELINE_NAMES = ["lib_ifi_pipeline", "lib_dhis2_pipeline", "my_pipeline"]
 ```
 
 Then deploy:
@@ -338,7 +347,7 @@ redshift:
 Each pipeline targets a **country-specific Redshift database** configured in its YAML. This allows multi-country deployments on the same Redshift Serverless workgroup:
 
 ```yaml
-# config/pipelines/ifi.yml
+# config/pipelines/lib_ifi_pipeline.yml
 redshift:
   database: liberia           # country-specific database
   schema: public
@@ -410,7 +419,7 @@ This means if the source adds new fields, the Glue Crawler picks them up and the
 Pipelines can send email alerts on start, failure, and retry. Configure in the pipeline YAML:
 
 ```yaml
-# config/pipelines/ifi.yml
+# config/pipelines/lib_ifi_pipeline.yml
 alerts:
   email_on_start: true          # send email when pipeline begins
   email_on_failure: true         # send email on any task failure
@@ -480,7 +489,7 @@ Trigger a full refresh for an incremental pipeline (ignores watermark):
 
 ```bash
 # Via Airflow API
-curl -X POST http://localhost:8080/api/v1/dags/etl_ifi/dagRuns \
+curl -X POST http://localhost:8080/api/v1/dags/etl_lib_ifi_pipeline/dagRuns \
   -H "Content-Type: application/json" \
   -u admin:admin \
   -d '{"conf": {"mode_override": "full", "country": "liberia"}}'
@@ -557,7 +566,7 @@ The React app interacts with two APIs:
 ### Trigger a run with overrides (from React)
 
 ```json
-POST /api/v1/dags/etl_ifi/dagRuns
+POST /api/v1/dags/etl_lib_ifi_pipeline/dagRuns
 {
   "conf": {
     "mode_override": "full",
@@ -574,7 +583,8 @@ Schedules are defined per pipeline in the YAML config:
 
 | Pipeline | Cron | Description |
 |----------|------|-------------|
-| IFI | `0 6 * * *` | Daily at 6 AM UTC |
+| lib_ifi_pipeline | `0 6 * * *` | Daily at 6 AM UTC |
+| lib_dhis2_pipeline | `0 7 * * *` | Daily at 7 AM UTC |
 
 On-demand runs can be triggered via Airflow UI, CLI, or the REST API.
 

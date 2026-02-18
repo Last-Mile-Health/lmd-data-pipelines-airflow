@@ -79,12 +79,21 @@ def execute_load(
     if post_sql:
         _execute_sql(client, workgroup, database, secret_arn, post_sql)
 
+    # Compute max watermark from the loaded data
+    max_watermark = None
+    incremental_key = load_params.get("incremental_key")
+    if incremental_key and load_params.get("mode") == "incremental":
+        max_watermark = _get_max_watermark(
+            client, workgroup, database, secret_arn,
+            schema, table, incremental_key,
+        )
+
     return {
         "status": "loaded",
         "load_mode": load_mode,
         "table": f"{schema}.{table}",
         "source": curated_s3_path,
-        "max_watermark": load_params.get("start_after"),
+        "max_watermark": max_watermark,
     }
 
 
@@ -218,6 +227,26 @@ def _load_merge(client, workgroup, database, secret_arn, schema, table, s3_path,
         COMMIT;
     """
     _execute_sql(client, workgroup, database, secret_arn, sql)
+
+
+def _get_max_watermark(client, workgroup, database, secret_arn, schema, table, incremental_key):
+    """Query Redshift for the max value of the incremental key column."""
+    sql = f'SELECT MAX("{incremental_key}") AS max_val FROM {schema}.{table}'
+    result = _execute_sql(client, workgroup, database, secret_arn, sql)
+
+    # Fetch the result
+    statement_id = result["Id"]
+    try:
+        rows = client.get_statement_result(Id=statement_id)
+        records = rows.get("Records", [])
+        if records and records[0] and records[0][0].get("stringValue"):
+            max_val = records[0][0]["stringValue"]
+            print(f"[CDC] Max watermark from Redshift: {incremental_key} = {max_val}")
+            return max_val
+    except Exception as e:
+        print(f"[CDC] Warning: Could not fetch max watermark: {e}")
+
+    return None
 
 
 def _execute_sql(client, workgroup, database, secret_arn, sql):

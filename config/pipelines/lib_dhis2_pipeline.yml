@@ -1,0 +1,85 @@
+# ═══════════════════════════════════════════════════════════
+# DHIS2 Pipeline — DataValueSets (Liberia)
+# ═══════════════════════════════════════════════════════════
+
+pipeline:
+  name: lib_dhis2_pipeline
+  description: "DHIS2 DataValueSets from Liberia DHIS2 instance"
+  owner: "LMD"
+  tags: ["dhis2", "liberia", "routine"]
+
+# ── Data Source ──
+source:
+  type: dhis2
+  secret_name: ${DHIS2_SECRET_NAME}       # resolved from .env → lmd-dev-dhis2-secrets
+  config:
+    # Credentials come from the secret: DHIS2_USERNAME, DHIS2_PASSWORD, DHIS2_BASE_URL
+    auth_type: basic
+    endpoint: /dataValueSets
+    params:
+      dataSet: "dUjJetW69xZ"               # e.g. "BfMAe6Itzgt"
+      period: "202601"                     # e.g. "2026Q1", "202601", "2026"
+      orgUnit: "LHNiyIWuLdc"               # e.g. "ImspTQPwCqd" (root org unit)
+      children: true                       # include child org units
+    page_size: 1000
+    default_country: liberia
+
+# ── Ingestion Mode ──
+ingestion:
+  mode: full                               # full | incremental
+  incremental_key: "lastUpdated"           # used when mode=incremental
+  partition_by:
+    - country
+    - year
+    - month
+    - day
+
+# ── Raw Layer (Raw JSON in S3) ──
+raw:
+  format: json
+
+# ── Processed Layer (Cleaned Parquet in S3) ──
+processed:
+  glue_job_script: glue_jobs/lib_dhis2_pipeline/raw_to_processed.py
+  custom_sql: sql/raw_to_processed/lib_dhis2_pipeline_clean.sql
+  deduplicate_key: null                    # set to a unique key if duplicates are possible
+
+# ── Curated Layer (Business Logic → Redshift) ──
+curated:
+  glue_job_script: glue_jobs/lib_dhis2_pipeline/processed_to_curated.py
+  custom_sql: sql/processed_to_curated/lib_dhis2_pipeline_transform.sql
+
+# ── Redshift Load ──
+redshift:
+  database: liberia
+  schema: public
+  table: dhis2_data_values
+  load_mode: replace                       # replace | append | merge
+  merge_keys: []
+  distribution_key: null
+  sort_keys: ["period"]
+  pre_sql: null
+  post_sql: null
+
+# ── Schedule ──
+schedule:
+  cron: "0 7 * * *"                        # Daily at 7 AM UTC
+  catchup: false
+  retries: 2
+  retry_delay_minutes: 5
+  timeout_minutes: 120
+
+# ── Data Quality Checks ──
+quality_checks:
+  - type: row_count_min
+    threshold: 1
+
+# ── Alerts ──
+alerts:
+  email_on_start: true
+  email_on_failure: true
+  email_on_retry: false
+  email_recipients:
+    - jdunyo@lastmilehealth.org
+    - lmdadmin@lastmilehealth.org
+  on_sla_miss: []

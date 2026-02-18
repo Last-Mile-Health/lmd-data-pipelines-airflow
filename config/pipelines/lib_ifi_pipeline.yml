@@ -3,7 +3,7 @@
 # ═══════════════════════════════════════════════════════════
 
 pipeline:
-  name: ifi
+  name: lib_ifi_pipeline
   description: "Implementation Fidelity Index from Kobo Toolbox"
   owner: "LMD"
   tags: ["kobo", "ifi", "liberia"]
@@ -36,14 +36,14 @@ raw:
 
 # ── Processed Layer (Cleaned Parquet in S3) ──
 processed:
-  glue_job_script: glue_jobs/raw_to_processed.py
-  custom_sql: sql/raw_to_processed/ifi_clean.sql
+  glue_job_script: glue_jobs/lib_ifi_pipeline/raw_to_processed.py
+  custom_sql: sql/raw_to_processed/lib_ifi_pipeline_clean.sql
   deduplicate_key: "_id"
 
 # ── Curated Layer (Business Logic → Redshift) ──
 curated:
-  glue_job_script: glue_jobs/processed_to_curated.py
-  custom_sql: sql/processed_to_curated/ifi_transform.sql
+  glue_job_script: glue_jobs/lib_ifi_pipeline/processed_to_curated.py
+  custom_sql: sql/processed_to_curated/lib_ifi_pipeline_transform.sql
 
 # ── Redshift Load ──
 redshift:
@@ -79,4 +79,5 @@ alerts:
   email_on_retry: false
   email_recipients:
     - jdunyo@lastmilehealth.org          # add your actual email addresses
+    - lmdadmin@lastmilehealth.org
   on_sla_miss: []

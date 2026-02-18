@@ -45,7 +45,7 @@ class AirflowPipelineStack(Stack):
         self.deploy_env = environment
         self.project_code = project_code
         self.prefix = f"{project_code}-{environment}"
-        self.pipeline_names = pipeline_names or ["ifi"]
+        self.pipeline_names = pipeline_names or ["lib_ifi_pipeline"]
 
         # ── S3 Buckets ──
         self.raw_bucket = self._create_bucket("raw")
@@ -198,7 +198,7 @@ class AirflowPipelineStack(Stack):
             role=self.glue_role.role_arn,
             command=glue.CfnJob.JobCommandProperty(
                 name="glueetl",
-                script_location=f"s3://{self.prefix}-assets/glue_jobs/raw_to_processed.py",
+                script_location=f"s3://{self.prefix}-assets/glue_jobs/{pipeline_name}/raw_to_processed.py",
                 python_version="3",
             ),
             glue_version="4.0",
@@ -223,7 +223,7 @@ class AirflowPipelineStack(Stack):
             role=self.glue_role.role_arn,
             command=glue.CfnJob.JobCommandProperty(
                 name="glueetl",
-                script_location=f"s3://{self.prefix}-assets/glue_jobs/processed_to_curated.py",
+                script_location=f"s3://{self.prefix}-assets/glue_jobs/{pipeline_name}/processed_to_curated.py",
                 python_version="3",
             ),
             glue_version="4.0",

@@ -6,6 +6,8 @@ Creates:
     - MWAA environment with VPC networking
     - IAM execution role with access to pipeline resources
 """
+from pathlib import Path
+
 from aws_cdk import (
     Stack,
     RemovalPolicy,
@@ -14,9 +16,13 @@ from aws_cdk import (
     aws_iam as iam,
     aws_mwaa as mwaa,
     aws_s3 as s3,
+    aws_s3_deployment as s3deploy,
     Tags,
 )
 from constructs import Construct
+
+# Project root is one level up from infrastructure/
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class MwaaStack(Stack):
@@ -84,6 +90,9 @@ class MwaaStack(Stack):
             "Allow MWAA internal traffic",
         )
 
+        # ── Upload DAGs, config, plugins, requirements to MWAA bucket ──
+        self._deploy_mwaa_assets()
+
         # ── IAM Execution Role ──
         self.execution_role = self._create_execution_role()
 
@@ -103,7 +112,6 @@ class MwaaStack(Stack):
             schedulers=2,
             source_bucket_arn=self.mwaa_bucket.bucket_arn,
             dag_s3_path="dags",
-            plugins_s3_path="plugins.zip",
             requirements_s3_path="requirements.txt",
             execution_role_arn=self.execution_role.role_arn,
             webserver_access_mode="PUBLIC_ONLY",
@@ -132,12 +140,17 @@ class MwaaStack(Stack):
                 "core.default_timezone": "utc",
                 "core.load_examples": "false",
                 "core.dagbag_import_timeout": "120",
-                "smtp.smtp_host": "",        # Set via MWAA console or update here
+                # SMTP: set smtp.smtp_host and smtp.smtp_user via MWAA console
                 "smtp.smtp_port": "587",
                 "smtp.smtp_starttls": "true",
                 "smtp.smtp_mail_from": "lmdadmin@lastmilehealth.org",
             },
         )
+
+        # Ensure MWAA waits for all S3 uploads to complete
+        self.mwaa_env.node.add_dependency(self.deploy_dags)
+        self.mwaa_env.node.add_dependency(self.deploy_config)
+        self.mwaa_env.node.add_dependency(self.deploy_requirements)
 
         # ── Tags ──
         Tags.of(self).add("Project", project_code)
@@ -149,6 +162,46 @@ class MwaaStack(Stack):
         CfnOutput(self, "MwaaBucketName", value=self.mwaa_bucket.bucket_name)
         CfnOutput(self, "MwaaEnvironmentName", value=self.mwaa_env.name)
         CfnOutput(self, "MwaaWebserverUrl", value=f"https://{self.mwaa_env.attr_webserver_url}")
+
+    def _deploy_mwaa_assets(self):
+        """Upload DAGs, config, and requirements to the MWAA S3 bucket."""
+        # DAGs → s3://{prefix}-mwaa/dags/
+        self.deploy_dags = s3deploy.BucketDeployment(
+            self,
+            "DeployDags",
+            sources=[s3deploy.Source.asset(
+                str(PROJECT_ROOT / "dags"),
+                exclude=["__pycache__", "*.pyc"],
+            )],
+            destination_bucket=self.mwaa_bucket,
+            destination_key_prefix="dags",
+            prune=False,
+        )
+
+        # Pipeline configs → s3://{prefix}-mwaa/dags/config/
+        # (DAGs read config/pipelines/*.yml relative to dags/)
+        self.deploy_config = s3deploy.BucketDeployment(
+            self,
+            "DeployConfig",
+            sources=[s3deploy.Source.asset(
+                str(PROJECT_ROOT / "config"),
+                exclude=["__pycache__", "*.pyc"],
+            )],
+            destination_bucket=self.mwaa_bucket,
+            destination_key_prefix="dags/config",
+            prune=False,
+        )
+
+        # requirements.txt → s3://{prefix}-mwaa/requirements.txt
+        # Use Source.data to inline the content (avoids glob/exclude issues)
+        requirements_content = (PROJECT_ROOT / "requirements.txt").read_text()
+        self.deploy_requirements = s3deploy.BucketDeployment(
+            self,
+            "DeployRequirements",
+            sources=[s3deploy.Source.data("requirements.txt", requirements_content)],
+            destination_bucket=self.mwaa_bucket,
+            prune=False,
+        )
 
     def _create_execution_role(self) -> iam.Role:
         """Create IAM execution role for MWAA."""

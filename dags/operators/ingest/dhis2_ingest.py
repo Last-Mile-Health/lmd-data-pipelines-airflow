@@ -60,6 +60,10 @@ def run(config: Dict, env_config: Dict, load_params: Dict) -> Dict:
     url = f"{base_url}{endpoint}"
     all_data = []
 
+    print(f'----', url)
+    print(f'---+++', env_config)
+    print(f'-----source', source_cfg)
+
     # Handle pagination
     page = 1
     page_size = source_cfg.get("page_size", 1000)

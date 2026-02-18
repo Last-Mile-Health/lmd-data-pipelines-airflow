@@ -27,7 +27,7 @@ ACCOUNTS = {
 account_config = ACCOUNTS.get(environment, ACCOUNTS["dev"])
 
 # Pipelines to create Glue jobs for
-PIPELINE_NAMES = ["ifi"]  # Add more as you create pipeline YAMLs
+PIPELINE_NAMES = ["lib_ifi_pipeline", "lib_dhis2_pipeline"]  # Add more as you create pipeline YAMLs
 
 PROJECT_CODE = "lmd-dp-airflow-v1"
 

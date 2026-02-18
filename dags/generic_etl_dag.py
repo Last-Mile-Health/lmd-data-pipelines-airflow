@@ -187,9 +187,7 @@ def create_etl_dag(pipeline_name: str, config: dict):
             if sql_file:
                 custom_sql_path = f"s3://{env['assets_bucket']}/{sql_file}"
 
-            response = glue_client.start_job_run(
-                JobName=job_name,
-                Arguments={
+            glue_args = {
                     "--source_path": ingest_result["s3_path"],
                     "--target_bucket": env["processed_bucket"],
                     "--pipeline_name": pipeline_name,
@@ -197,11 +195,18 @@ def create_etl_dag(pipeline_name: str, config: dict):
                     "--country": load_params["country"],
                     "--ingestion_time": load_params["ingestion_time"],
                     "--custom_sql_path": custom_sql_path,
-                    "--dedup_key": config.get("processed", {}).get("deduplicate_key", ""),
                     "--load_mode": load_params["mode"],
                     "--metadata_table": env["metadata_table"],
                     "--source_format": config.get("raw", {}).get("format", "json"),
-                },
+            }
+
+            dedup_key = config.get("processed", {}).get("deduplicate_key")
+            if dedup_key:
+                glue_args["--dedup_key"] = dedup_key
+
+            response = glue_client.start_job_run(
+                JobName=job_name,
+                Arguments=glue_args,
             )
             job_run_id = response["JobRunId"]
 
