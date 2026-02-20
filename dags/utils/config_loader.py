@@ -11,16 +11,36 @@ import yaml
 from typing import Dict, Any
 
 
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "config", "pipelines")
+# In MWAA, config is at /usr/local/airflow/dags/config/pipelines/
+# (CDK uploads config/ into the dags/ prefix in S3)
+# Locally, config is at ../../config/pipelines from dags/utils/
+_MWAA_CONFIG = os.path.join(os.path.dirname(__file__), "..", "config", "pipelines")
+_LOCAL_CONFIG = os.path.join(os.path.dirname(__file__), "..", "..", "config", "pipelines")
+CONFIG_DIR = _MWAA_CONFIG if os.path.isdir(_MWAA_CONFIG) else _LOCAL_CONFIG
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{(\w+)\}")
+
+
+def _get_env(var_name: str, default: str = "") -> str:
+    """Get env var, checking both direct name and MWAA env_var convention.
+
+    MWAA config `env_var.foo_bar` becomes env var `AIRFLOW__ENV_VAR__FOO_BAR`.
+    We check: VAR_NAME → AIRFLOW__ENV_VAR__VAR_NAME (uppercased).
+    """
+    upper = var_name.upper()
+    return (
+        os.environ.get(var_name)
+        or os.environ.get(upper)
+        or os.environ.get(f"AIRFLOW__ENV_VAR__{upper}")
+        or default
+    )
 
 
 def _resolve_env_vars(obj):
     """Recursively resolve ${VAR_NAME} placeholders in config values."""
     if isinstance(obj, str):
         return _ENV_VAR_PATTERN.sub(
-            lambda m: os.environ.get(m.group(1), m.group(0)), obj
+            lambda m: _get_env(m.group(1), m.group(0)), obj
         )
     if isinstance(obj, dict):
         return {k: _resolve_env_vars(v) for k, v in obj.items()}
@@ -61,9 +81,18 @@ def get_env_config() -> Dict[str, str]:
     Read environment-level config from env vars.
     These point to existing AWS resources created by the CDK stack.
     """
-    env = os.getenv("LMD_ENVIRONMENT", "dev")
-    project_code = os.getenv("LMD_PROJECT_CODE", "lmd-dp-airflow-v1")
+    env = _get_env("LMD_ENVIRONMENT", "dev")
+    project_code = _get_env("LMD_PROJECT_CODE", "lmd-dp-airflow-v1")
     prefix = f"{project_code}-{env}"
+
+    # Environment-specific config (avoids reliance on env vars in MWAA)
+    ENV_CONFIGS = {
+        "dev": {
+            "redshift_secret_name": "lmd-20-dev",
+            "redshift_iam_role_arn": "arn:aws:iam::002190277880:role/lmd-v2-redshift-s3-dev",
+        },
+    }
+    env_cfg = ENV_CONFIGS.get(env, ENV_CONFIGS["dev"])
 
     return {
         "environment": env,
@@ -79,9 +108,9 @@ def get_env_config() -> Dict[str, str]:
         # Glue
         "glue_database": f"{prefix}".replace("-", "_"),
         # Redshift
-        "redshift_secret_name": os.getenv("REDSHIFT_SECRET_NAME", ""),
-        "redshift_iam_role_arn": os.getenv("REDSHIFT_IAM_ROLE_ARN", ""),
-        "redshift_database": os.getenv("REDSHIFT_DATABASE", f"{prefix}".replace("-", "_")),
+        "redshift_secret_name": env_cfg["redshift_secret_name"],
+        "redshift_iam_role_arn": env_cfg["redshift_iam_role_arn"],
+        "redshift_database": _get_env("REDSHIFT_DATABASE", f"{prefix}".replace("-", "_")),
         # Region
         "aws_region": os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
     }

@@ -38,7 +38,7 @@ class MwaaEnvironmentStack(Stack):
         # Resolve foundation resources
         bucket_arn = foundation.mwaa_bucket.bucket_arn
         execution_role_arn = foundation.execution_role.role_arn
-        sg_id = foundation.security_group.security_group_id
+        sg_ids = foundation.security_group_ids
 
         private_subnets = foundation.vpc.select_subnets(
             subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS
@@ -61,7 +61,7 @@ class MwaaEnvironmentStack(Stack):
             webserver_access_mode="PUBLIC_ONLY",
             network_configuration=mwaa.CfnEnvironment.NetworkConfigurationProperty(
                 subnet_ids=private_subnets.subnet_ids[:2],
-                security_group_ids=[sg_id],
+                security_group_ids=sg_ids,
             ),
             logging_configuration=mwaa.CfnEnvironment.LoggingConfigurationProperty(
                 dag_processing_logs=mwaa.CfnEnvironment.ModuleLoggingConfigurationProperty(
@@ -84,9 +84,13 @@ class MwaaEnvironmentStack(Stack):
                 "core.default_timezone": "utc",
                 "core.load_examples": "false",
                 "core.dagbag_import_timeout": "120",
+                # SMTP
+                "smtp.smtp_host": "email-smtp.us-east-1.amazonaws.com",
                 "smtp.smtp_port": "587",
                 "smtp.smtp_starttls": "true",
                 "smtp.smtp_mail_from": "lmdadmin@lastmilehealth.org",
+                "smtp.smtp_user": "AKIAQBAUM7T4DBCZIZBX",
+                "smtp.smtp_password": "BAkCxyqpnGl4XtaETJvEwuLzwI81yxUHVW9Q+4Vsxhqw",
             },
         )
 

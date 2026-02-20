@@ -12,7 +12,7 @@ pipeline:
 # ── Data Source ──
 source:
   type: dhis2
-  secret_name: ${DHIS2_SECRET_NAME}       # resolved from .env → lmd-dev-dhis2-secrets
+  secret_name: lmd-dev-dhis2-secrets
   config:
     # Credentials come from the secret: DHIS2_USERNAME, DHIS2_PASSWORD, DHIS2_BASE_URL
     auth_type: basic

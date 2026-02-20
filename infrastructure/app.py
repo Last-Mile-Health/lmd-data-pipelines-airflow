@@ -1,15 +1,22 @@
 """
 CDK App entry point for Airflow pipeline infrastructure.
 
+Stacks (deploy order):
+    1. AirflowPipelineStack  — S3 data buckets, DynamoDB, Glue jobs
+    2. MwaaFoundationStack   — MWAA S3 bucket, VPC, security group, execution role
+    3. MwaaEnvironmentStack  — MWAA environment (depends on #2)
+
 Usage:
-    cdk deploy --context env=dev                          # Deploy Glue jobs + S3 + DynamoDB
-    cdk deploy --context env=dev --all                    # Deploy everything including MWAA
-    cdk deploy {PROJECT_CODE}-{env}-mwaa --context env=dev  # Deploy only MWAA
+    cdk deploy --context env=dev                                           # Deploy all stacks
+    cdk deploy {PROJECT_CODE}-{env} --context env=dev                      # Pipeline resources only
+    cdk deploy {PROJECT_CODE}-{env}-mwaa-foundation --context env=dev      # MWAA foundation only
+    cdk deploy {PROJECT_CODE}-{env}-mwaa --context env=dev                 # MWAA environment only
 """
 import os
 import aws_cdk as cdk
 from airflow_stack import AirflowPipelineStack
-from mwaa_stack import MwaaStack
+from mwaa_foundation_stack import MwaaFoundationStack
+from mwaa_env_stack import MwaaEnvironmentStack
 
 
 app = cdk.App()
@@ -36,7 +43,7 @@ cdk_env = cdk.Environment(
     region=account_config["region"],
 )
 
-# Stack 1: Pipeline resources (S3, DynamoDB, Glue jobs, IAM)
+# Stack 1: Pipeline resources (S3 data buckets, DynamoDB, Glue jobs, IAM)
 AirflowPipelineStack(
     app,
     f"{PROJECT_CODE}-{environment}",
@@ -46,10 +53,31 @@ AirflowPipelineStack(
     env=cdk_env,
 )
 
-# Stack 2: MWAA environment (VPC, IAM, MWAA)
-MwaaStack(
+# Existing VPC and security groups per environment (reuse existing MWAA networking)
+VPC_IDS = {
+    "dev": "vpc-06e2afb2131117b11",   # MWAAEnvironment
+}
+SECURITY_GROUP_IDS = {
+    "dev": ["sg-02ac083456cb37e4e", "sg-055a2707b998827ba"],
+}
+
+# Stack 2: MWAA foundation (S3 MWAA bucket, VPC, security group, execution role)
+# Deploy this FIRST — ensures bucket/role/subnets exist before MWAA validates them.
+foundation = MwaaFoundationStack(
+    app,
+    f"{PROJECT_CODE}-{environment}-mwaa-foundation",
+    environment=environment,
+    project_code=PROJECT_CODE,
+    vpc_id=VPC_IDS.get(environment),
+    security_group_ids=SECURITY_GROUP_IDS.get(environment),
+    env=cdk_env,
+)
+
+# Stack 3: MWAA environment (depends on foundation stack)
+MwaaEnvironmentStack(
     app,
     f"{PROJECT_CODE}-{environment}-mwaa",
+    foundation=foundation,
     environment=environment,
     project_code=PROJECT_CODE,
     env=cdk_env,

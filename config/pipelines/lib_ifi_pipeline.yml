@@ -11,7 +11,7 @@ pipeline:
 # ── Data Source ──
 source:
   type: kobo_api
-  secret_name: ${KOBO_SECRET_NAME}    # resolved from .env at runtime
+  secret_name: lmd-dev-kobo-secrets
   config:
     form_id: "aUEoTMLrdyEvE9eYc2jRAV"
     export_format: json
@@ -21,7 +21,7 @@ source:
 
 # ── Ingestion Mode ──
 ingestion:
-  mode: incremental                    # full | incremental
+  mode: full                    # full | incremental
   incremental_key: "_submission_time"  # column used for watermark
   partition_by:
     - country

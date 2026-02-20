@@ -104,7 +104,7 @@ class MwaaStack(Stack):
         self.mwaa_env = mwaa.CfnEnvironment(
             self,
             "MwaaEnvironment",
-            name=f"{self.prefix}-mwaa",
+            name=f"{self.prefix}-mwaa-v2",
             airflow_version="2.9.2",
             environment_class="mw1.small",  # mw1.small | mw1.medium | mw1.large
             max_workers=5,

@@ -6,7 +6,9 @@ Creates all AWS resources for the ETL pipelines:
     - DynamoDB metadata table
     - Glue catalog database
     - Glue jobs (raw_to_processed, processed_to_curated) per pipeline
-    - IAM roles for Glue jobs
+
+If a resource already exists, it is imported. For IAM roles, the trust
+policy and permissions are always enforced via CfnRole to prevent drift.
 """
 import os
 from pathlib import Path
@@ -23,6 +25,8 @@ from aws_cdk import (
 )
 from constructs import Construct
 from typing import List
+
+from resource_lookup import bucket_exists, dynamodb_table_exists
 
 # Project root is one level up from infrastructure/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -47,23 +51,23 @@ class AirflowPipelineStack(Stack):
         self.prefix = f"{project_code}-{environment}"
         self.pipeline_names = pipeline_names or ["lib_ifi_pipeline"]
 
-        # ── S3 Buckets ──
-        self.raw_bucket = self._create_bucket("raw")
-        self.processed_bucket = self._create_bucket("processed")
-        self.curated_bucket = self._create_bucket("curated")
-        self.assets_bucket = self._create_bucket("assets")
+        # ── S3 Buckets (import if exists, safe for data buckets) ──
+        self.raw_bucket = self._create_or_import_bucket("raw")
+        self.processed_bucket = self._create_or_import_bucket("processed")
+        self.curated_bucket = self._create_or_import_bucket("curated")
+        self.assets_bucket = self._create_or_import_bucket("assets")
 
         # ── Upload Glue scripts & SQL to assets bucket ──
         self._deploy_assets()
 
-        # ── DynamoDB Metadata Table ──
-        self.metadata_table = self._create_metadata_table()
+        # ── DynamoDB Metadata Table (import if exists, safe) ──
+        self.metadata_table = self._create_or_import_metadata_table()
 
         # ── Glue Catalog Database ──
         self.glue_database = self._create_glue_database()
 
-        # ── Glue IAM Role (shared across pipelines) ──
-        self.glue_role = self._create_glue_role()
+        # ── Glue IAM Role (always enforce trust policy + permissions) ──
+        self.glue_role = self._ensure_glue_role()
 
         # ── Glue Jobs per pipeline ──
         for pipeline_name in self.pipeline_names:
@@ -75,12 +79,17 @@ class AirflowPipelineStack(Stack):
         Tags.of(self).add("Environment", environment)
         Tags.of(self).add("Component", "airflow")
 
-    def _create_bucket(self, suffix: str) -> s3.Bucket:
-        """Create an S3 bucket with standard config."""
+    def _create_or_import_bucket(self, suffix: str) -> s3.IBucket:
+        """Create or import an S3 bucket."""
         bucket_name = f"{self.prefix}-{suffix}"
+        construct_id = f"{suffix.capitalize()}Bucket"
+
+        if bucket_exists(bucket_name):
+            return s3.Bucket.from_bucket_name(self, construct_id, bucket_name)
+
         return s3.Bucket(
             self,
-            f"{suffix.capitalize()}Bucket",
+            construct_id,
             bucket_name=bucket_name,
             versioned=True,
             encryption=s3.BucketEncryption.S3_MANAGED,
@@ -90,7 +99,6 @@ class AirflowPipelineStack(Stack):
 
     def _deploy_assets(self):
         """Upload Glue scripts and SQL files to the assets bucket."""
-        # Glue job scripts → s3://{prefix}-assets/glue_jobs/
         s3deploy.BucketDeployment(
             self,
             "DeployGlueScripts",
@@ -103,7 +111,6 @@ class AirflowPipelineStack(Stack):
             prune=False,
         )
 
-        # SQL files → s3://{prefix}-assets/sql/
         s3deploy.BucketDeployment(
             self,
             "DeploySqlScripts",
@@ -116,12 +123,19 @@ class AirflowPipelineStack(Stack):
             prune=False,
         )
 
-    def _create_metadata_table(self) -> dynamodb.Table:
-        """Create DynamoDB table for pipeline watermarks and metadata."""
+    def _create_or_import_metadata_table(self) -> dynamodb.ITable:
+        """Create or import the DynamoDB metadata table."""
+        table_name = f"{self.prefix}-pipeline-metadata"
+
+        if dynamodb_table_exists(table_name):
+            return dynamodb.Table.from_table_name(
+                self, "MetadataTable", table_name,
+            )
+
         return dynamodb.Table(
             self,
             "MetadataTable",
-            table_name=f"{self.prefix}-pipeline-metadata",
+            table_name=table_name,
             partition_key=dynamodb.Attribute(
                 name="pipeline_name",
                 type=dynamodb.AttributeType.STRING,
@@ -147,50 +161,86 @@ class AirflowPipelineStack(Stack):
             ),
         )
 
-    def _create_glue_role(self) -> iam.Role:
-        """Create IAM role for Glue ETL jobs."""
-        role = iam.Role(
+    def _ensure_glue_role(self) -> iam.IRole:
+        """Ensure the Glue IAM role exists with correct trust policy and permissions.
+
+        Uses CfnRole to always enforce the trust policy and managed policies,
+        whether the role is new or already exists. CfnRole with the same name
+        will update in-place, not fail on existence.
+        """
+        glue_role_name = f"{self.prefix}-glue-role"
+
+        # CfnRole updates in-place if the role already exists (idempotent)
+        cfn_role = iam.CfnRole(
             self,
-            "GlueETLRole",
-            role_name=f"{self.prefix}-glue-role",
-            assumed_by=iam.ServicePrincipal("glue.amazonaws.com"),
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name(
-                    "service-role/AWSGlueServiceRole"
+            "GlueETLRoleCfn",
+            role_name=glue_role_name,
+            assume_role_policy_document={
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"Service": "glue.amazonaws.com"},
+                        "Action": "sts:AssumeRole",
+                    }
+                ],
+            },
+            managed_policy_arns=[
+                "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole",
+            ],
+            policies=[
+                iam.CfnRole.PolicyProperty(
+                    policy_name="GlueETLInlinePolicy",
+                    policy_document={
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Action": [
+                                    "s3:GetObject*", "s3:PutObject*",
+                                    "s3:DeleteObject*", "s3:ListBucket",
+                                    "s3:GetBucketLocation",
+                                ],
+                                "Resource": [
+                                    f"arn:aws:s3:::{self.prefix}-{suffix}"
+                                    for suffix in ["raw", "processed", "curated", "assets"]
+                                ] + [
+                                    f"arn:aws:s3:::{self.prefix}-{suffix}/*"
+                                    for suffix in ["raw", "processed", "curated", "assets"]
+                                ],
+                            },
+                            {
+                                "Effect": "Allow",
+                                "Action": [
+                                    "dynamodb:GetItem", "dynamodb:PutItem",
+                                    "dynamodb:UpdateItem", "dynamodb:Query",
+                                ],
+                                "Resource": f"arn:aws:dynamodb:*:*:table/{self.prefix}-pipeline-metadata",
+                            },
+                            {
+                                "Effect": "Allow",
+                                "Action": [
+                                    "logs:CreateLogGroup",
+                                    "logs:CreateLogStream",
+                                    "logs:PutLogEvents",
+                                ],
+                                "Resource": "arn:aws:logs:*:*:*",
+                            },
+                        ],
+                    },
                 ),
             ],
         )
 
-        # S3 access to all pipeline buckets
-        for bucket in [
-            self.raw_bucket,
-            self.processed_bucket,
-            self.curated_bucket,
-            self.assets_bucket,
-        ]:
-            bucket.grant_read_write(role)
-
-        # DynamoDB access for metadata updates
-        self.metadata_table.grant_read_write_data(role)
-
-        # CloudWatch logs
-        role.add_to_policy(
-            iam.PolicyStatement(
-                actions=[
-                    "logs:CreateLogGroup",
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents",
-                ],
-                resources=["arn:aws:logs:*:*:*"],
-            )
+        # Return an IRole reference for use by Glue jobs
+        return iam.Role.from_role_arn(
+            self, "GlueETLRole",
+            role_arn=f"arn:aws:iam::{self.account}:role/{glue_role_name}",
         )
-
-        return role
 
     def _create_pipeline_glue_jobs(self, pipeline_name: str):
         """Create Raw->Processed and Processed->Curated Glue jobs for a pipeline."""
 
-        # Raw -> Processed
         glue.CfnJob(
             self,
             f"{pipeline_name}RawToProcessed",
@@ -215,7 +265,6 @@ class AirflowPipelineStack(Stack):
             },
         )
 
-        # Processed -> Curated
         glue.CfnJob(
             self,
             f"{pipeline_name}ProcessedToCurated",
