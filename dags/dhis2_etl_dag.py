@@ -14,6 +14,8 @@ Only instantiated if config/pipelines/lib_dhis2_pipeline.yml exists
 and has pipeline.dag_type == 'dhis2'.
 """
 import os
+import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 
@@ -21,6 +23,8 @@ from airflow.decorators import dag, task
 from airflow.utils.email import send_email
 
 from utils.config_loader import load_all_pipeline_configs, get_env_config
+
+log = logging.getLogger(__name__)
 
 
 def _on_failure_callback(context, recipients, pipeline_name):
@@ -99,6 +103,13 @@ def create_dhis2_dag(pipeline_name: str, config: dict):
 
         @task(on_execute_callback=_start_cb)
         def resolve_load_params(**context):
+            log.info("=" * 60)
+            log.info(f"[resolve_load_params] START — pipeline={pipeline_name}")
+            log.info(f"[resolve_load_params] env_config={json.dumps(env, indent=2)}")
+            log.info(f"[resolve_load_params] source.secret_name={config.get('source', {}).get('secret_name', 'NOT SET')}")
+            log.info(f"[resolve_load_params] redshift_secret_name={env.get('redshift_secret_name', 'NOT SET')}")
+            log.info(f"[resolve_load_params] redshift_iam_role_arn={env.get('redshift_iam_role_arn', 'NOT SET')}")
+
             from dateutil.relativedelta import relativedelta
             from utils.cdc import get_watermark, compute_boundaries
 
@@ -121,6 +132,12 @@ def create_dhis2_dag(pipeline_name: str, config: dict):
                 "pipeline_name": pipeline_name,
                 "country": conf.get("country", config["source"]["config"].get("default_country", "global")),
             }
+
+            # Pass runtime overrides for source params (period, dataSet, orgUnit, etc.)
+            source_params = conf.get("source_params", {})
+            if source_params:
+                params["source_params"] = source_params
+                log.info(f"[resolve_load_params] Runtime source_params overrides: {source_params}")
 
             if cdc_strategy == "incremental":
                 params["mode"] = "incremental"
@@ -153,13 +170,19 @@ def create_dhis2_dag(pipeline_name: str, config: dict):
                 params["watermark"] = None
                 print(f"[CDC] Strategy=full — static params, no watermark filter")
 
+            log.info(f"[resolve_load_params] OUTPUT: {json.dumps(params, default=str)}")
+            log.info("=" * 60)
             return params
 
         # ── TASK 2a: Load dimensions (parallel) ───────────────
         @task
         def load_single_dimension(dim_cfg: dict, load_params: dict, **context):
             """Fetch one DHIS2 metadata endpoint and load into Redshift dimension table."""
-            import json
+            log.info("=" * 60)
+            log.info(f"[load_single_dimension] START — dim={dim_cfg.get('name')}")
+            log.info(f"[load_single_dimension] source.secret_name={config.get('source', {}).get('secret_name', 'NOT SET')}")
+            log.info(f"[load_single_dimension] redshift_secret_name={env.get('redshift_secret_name', 'NOT SET')}")
+
             import boto3
             from operators.ingest.dhis2_metadata_ingest import run_dimension
             from operators.redshift_load import (
@@ -201,11 +224,17 @@ def create_dhis2_dag(pipeline_name: str, config: dict):
                 columns=dim_cfg["columns"],
             )
 
+            log.info(f"[load_single_dimension] OUTPUT: {json.dumps(result, default=str)}")
+            log.info("=" * 60)
             return result
 
         # ── TASK 2b: Ingest fact data → Raw (S3/JSON) ─────────
         @task
         def ingest_to_raw(load_params: dict, **context):
+            log.info("=" * 60)
+            log.info(f"[ingest_to_raw] START — pipeline={pipeline_name}")
+            log.info(f"[ingest_to_raw] INPUT load_params={json.dumps(load_params, default=str)}")
+            log.info(f"[ingest_to_raw] source.secret_name={config.get('source', {}).get('secret_name', 'NOT SET')}")
             from operators.ingest.dhis2_ingest import run as dhis2_run
 
             result = dhis2_run(
@@ -213,6 +242,9 @@ def create_dhis2_dag(pipeline_name: str, config: dict):
                 env_config=env,
                 load_params=load_params,
             )
+
+            log.info(f"[ingest_to_raw] OUTPUT: {json.dumps(result, default=str)}")
+            log.info("=" * 60)
 
             if result.get("record_count", 0) == 0:
                 from airflow.exceptions import AirflowSkipException
@@ -377,14 +409,18 @@ def create_dhis2_dag(pipeline_name: str, config: dict):
         @task
         def load_to_redshift(curated_result: dict, load_params: dict, **context):
             """Load curated fact data into Redshift. Runs after dimensions are loaded."""
+            log.info(f"[load_to_redshift] START — INPUT curated_s3_path={curated_result['s3_path']}")
+            log.info(f"[load_to_redshift] redshift_secret={env.get('redshift_secret_name')}, iam_role={env.get('redshift_iam_role_arn')}")
             from operators.redshift_load import execute_load
 
-            return execute_load(
+            result = execute_load(
                 config=config,
                 env_config=env,
                 curated_s3_path=curated_result["s3_path"],
                 load_params=load_params,
             )
+            log.info(f"[load_to_redshift] OUTPUT: {json.dumps(result, default=str)}")
+            return result
 
         # ── TASK 6: Update watermark ──────────────────────────
         @task

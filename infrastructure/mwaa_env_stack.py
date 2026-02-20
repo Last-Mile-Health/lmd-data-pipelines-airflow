@@ -86,7 +86,7 @@ class MwaaEnvironmentStack(Stack):
                 "core.dagbag_import_timeout": "120",
                 # SMTP
                 "smtp.smtp_host": "email-smtp.us-east-1.amazonaws.com",
-                "smtp.smtp_port": "587",
+                "smtp.smtp_port": "465",
                 "smtp.smtp_starttls": "true",
                 "smtp.smtp_mail_from": "lmdadmin@lastmilehealth.org",
                 "smtp.smtp_user": "AKIAQBAUM7T4DBCZIZBX",
@@ -97,6 +97,7 @@ class MwaaEnvironmentStack(Stack):
         # Ensure MWAA waits for all S3 uploads from the foundation stack
         self.mwaa_env.node.add_dependency(foundation.deploy_dags)
         self.mwaa_env.node.add_dependency(foundation.deploy_config)
+        self.mwaa_env.node.add_dependency(foundation.deploy_sql)
         self.mwaa_env.node.add_dependency(foundation.deploy_requirements)
 
         # ── Tags ──

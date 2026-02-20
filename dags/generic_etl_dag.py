@@ -7,6 +7,8 @@ Flow per pipeline:
         → load_to_redshift → update_watermark → run_quality_checks
 """
 import os
+import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 
@@ -15,6 +17,8 @@ from airflow.models import Variable
 from airflow.utils.email import send_email
 
 from utils.config_loader import load_all_pipeline_configs, get_env_config
+
+log = logging.getLogger(__name__)
 
 
 def _on_failure_callback(context, recipients, pipeline_name):
@@ -93,16 +97,18 @@ def create_etl_dag(pipeline_name: str, config: dict):
 
         @task(on_execute_callback=_start_cb)
         def resolve_load_params(**context):
-            """
-            Determine what data to pull.
-            - full: no boundaries, pull everything
-            - incremental: read watermark from DynamoDB, set start boundary
-            """
+            log.info("=" * 60)
+            log.info(f"[resolve_load_params] START — pipeline={pipeline_name}")
+            log.info(f"[resolve_load_params] env_config={json.dumps(env, indent=2)}")
+            log.info(f"[resolve_load_params] source.secret_name={config.get('source', {}).get('secret_name', 'NOT SET')}")
+            log.info(f"[resolve_load_params] redshift_secret_name={env.get('redshift_secret_name', 'NOT SET')}")
+            log.info(f"[resolve_load_params] redshift_iam_role_arn={env.get('redshift_iam_role_arn', 'NOT SET')}")
             from utils.cdc import get_watermark, compute_boundaries
 
-            # Allow runtime override via dag_run.conf
+            # Runtime overrides via dag_run.conf (defaults from YAML)
             conf = context["dag_run"].conf or {}
-            mode = conf.get("mode_override", config["ingestion"]["mode"])
+            mode = conf.get("mode", config["ingestion"]["mode"])  # full | incremental
+            log.info(f"[resolve_load_params] mode={mode} (default={config['ingestion']['mode']}, override={conf.get('mode', 'none')})")
 
             execution_id = str(uuid.uuid4())
             ingestion_time = datetime.utcnow().isoformat()
@@ -131,6 +137,8 @@ def create_etl_dag(pipeline_name: str, config: dict):
                 params["watermark"] = None
                 print(f"[CDC] Mode=full — no watermark filter")
 
+            log.info(f"[resolve_load_params] OUTPUT: {json.dumps(params, default=str)}")
+            log.info("=" * 60)
             return params
 
         # ── TASK 2: Ingest from source → Raw (S3/JSON) ────────
@@ -141,6 +149,12 @@ def create_etl_dag(pipeline_name: str, config: dict):
             Writes raw data (JSON) to Raw layer in S3.
             Returns S3 path of ingested data.
             """
+            log.info("=" * 60)
+            log.info(f"[ingest_to_raw] START — pipeline={pipeline_name}")
+            log.info(f"[ingest_to_raw] INPUT load_params={json.dumps(load_params, default=str)}")
+            log.info(f"[ingest_to_raw] source_type={config['source']['type']}")
+            log.info(f"[ingest_to_raw] source.secret_name={config.get('source', {}).get('secret_name', 'NOT SET')}")
+
             from operators.ingest.csv_ingest import run as csv_run
             from operators.ingest.dhis2_ingest import run as dhis2_run
             from operators.ingest.api_ingest import run as api_run
@@ -164,7 +178,8 @@ def create_etl_dag(pipeline_name: str, config: dict):
                 load_params=load_params,
             )
 
-            print(f'-----results', result)
+            log.info(f"[ingest_to_raw] OUTPUT: {json.dumps(result, default=str)}")
+            log.info("=" * 60)
 
             # Short-circuit: no new data to process
             if result.get("record_count", 0) == 0:
@@ -177,6 +192,7 @@ def create_etl_dag(pipeline_name: str, config: dict):
         @task
         def trigger_raw_to_processed(ingest_result: dict, load_params: dict, **context):
             """Start Glue job for Raw→Processed transformation (fully dynamic, no custom SQL)."""
+            log.info(f"[raw_to_processed] START — INPUT ingest_result={json.dumps(ingest_result, default=str)}")
             import boto3
 
             glue_client = boto3.client("glue", region_name=env["aws_region"])
@@ -229,15 +245,18 @@ def create_etl_dag(pipeline_name: str, config: dict):
                 f"{now.strftime('%Y/%m/%d')}/"
                 f"{load_params['execution_id']}/"
             )
-            return {
+            result = {
                 "s3_path": f"s3://{env['processed_bucket']}/{processed_key}",
                 "processed_key": processed_key,
             }
+            log.info(f"[raw_to_processed] OUTPUT: {json.dumps(result, default=str)}")
+            return result
 
         # ── TASK 4: Processed → Curated (Glue Spark) ──────────
         @task
         def trigger_processed_to_curated(processed_result: dict, load_params: dict, **context):
             """Start Glue job for Processed→Curated transformation (business logic via custom SQL)."""
+            log.info(f"[processed_to_curated] START — INPUT processed_result={json.dumps(processed_result, default=str)}")
             import boto3
 
             glue_client = boto3.client("glue", region_name=env["aws_region"])
@@ -280,10 +299,12 @@ def create_etl_dag(pipeline_name: str, config: dict):
                 f"{now.strftime('%Y/%m/%d')}/"
                 f"{load_params['execution_id']}/"
             )
-            return {
+            result = {
                 "s3_path": f"s3://{env['curated_bucket']}/{curated_key}",
                 "curated_key": curated_key,
             }
+            log.info(f"[processed_to_curated] OUTPUT: {json.dumps(result, default=str)}")
+            return result
 
         # ── TASK 5a: Crawl Curated S3 (Glue Crawler) ────────────
         @task
@@ -338,14 +359,18 @@ def create_etl_dag(pipeline_name: str, config: dict):
         @task
         def load_to_redshift(curated_result: dict, load_params: dict, **context):
             """Load curated data from S3 into Redshift."""
+            log.info(f"[load_to_redshift] START — INPUT curated_s3_path={curated_result['s3_path']}")
+            log.info(f"[load_to_redshift] redshift_secret={env.get('redshift_secret_name')}, iam_role={env.get('redshift_iam_role_arn')}")
             from operators.redshift_load import execute_load
 
-            return execute_load(
+            result = execute_load(
                 config=config,
                 env_config=env,
                 curated_s3_path=curated_result["s3_path"],
                 load_params=load_params,
             )
+            log.info(f"[load_to_redshift] OUTPUT: {json.dumps(result, default=str)}")
+            return result
 
         # ── TASK 6: Update watermark ───────────────────────────
         @task
@@ -395,7 +420,10 @@ def create_etl_dag(pipeline_name: str, config: dict):
 # ═══════════════════════════════════════════════════════════
 # Auto-generate DAGs from all YAML configs
 # ═══════════════════════════════════════════════════════════
-for _name, _cfg in load_all_pipeline_configs().items():
+_all_configs = load_all_pipeline_configs()
+log.info(f"[DAG Factory] Loaded {len(_all_configs)} pipeline configs: {list(_all_configs.keys())}")
+for _name, _cfg in _all_configs.items():
+    log.info(f"[DAG Factory] {_name}: secret_name={_cfg.get('source', {}).get('secret_name', 'N/A')}, dag_type={_cfg.get('pipeline', {}).get('dag_type', 'generic')}")
     # Skip pipelines handled by dedicated DAGs (e.g. dag_type: dhis2)
     if _cfg.get("pipeline", {}).get("dag_type"):
         continue

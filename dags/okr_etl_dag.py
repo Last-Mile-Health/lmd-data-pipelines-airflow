@@ -10,6 +10,8 @@ Flow:
 Auto-generated from YAML configs where dag_type == 'okr_redshift_to_rds'.
 """
 import os
+import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 
@@ -17,6 +19,8 @@ from airflow.decorators import dag, task
 from airflow.utils.email import send_email
 
 from utils.config_loader import load_all_pipeline_configs, get_env_config
+
+log = logging.getLogger(__name__)
 
 
 def _on_failure_callback(context, recipients, pipeline_name):
@@ -97,18 +101,29 @@ def create_okr_dag(pipeline_name: str, config: dict):
 
         @task(on_execute_callback=_start_cb)
         def resolve_run_params(**context):
+            log.info("=" * 60)
+            log.info(f"[resolve_run_params] START — pipeline={pipeline_name}")
+            log.info(f"[resolve_run_params] env_config={json.dumps(env, indent=2)}")
+            log.info(f"[resolve_run_params] redshift_secret_name={env.get('redshift_secret_name', 'NOT SET')}")
+            log.info(f"[resolve_run_params] target.secret_name={target_cfg.get('secret_name', 'NOT SET')}")
+            log.info(f"[resolve_run_params] target.writer_endpoint={target_cfg.get('writer_endpoint', 'NOT SET')}")
+
             execution_id = str(uuid.uuid4())
             ingestion_time = datetime.utcnow().isoformat()
-            return {
+            result = {
                 "execution_id": execution_id,
                 "ingestion_time": ingestion_time,
                 "pipeline_name": pipeline_name,
             }
+            log.info(f"[resolve_run_params] OUTPUT: {json.dumps(result, default=str)}")
+            log.info("=" * 60)
+            return result
 
         # ── TASK 2: Refresh Redshift views (transforms) ────
         @task
         def refresh_redshift_views(run_params: dict, **context):
             """Execute transform SQL files on Redshift (CREATE OR REPLACE VIEW, etc)."""
+            log.info(f"[refresh_redshift_views] START — INPUT run_params={json.dumps(run_params, default=str)}")
             from operators.dbt_runner import run_transforms
 
             sql_dir = transform_cfg.get("sql_dir", "sql/okr_transforms")
@@ -127,6 +142,10 @@ def create_okr_dag(pipeline_name: str, config: dict):
         # ── TASK 3: Extract view and load to RDS ───────────
         @task
         def process_single_view(view_cfg: dict, run_params: dict, transform_result: dict, **context):
+            log.info("=" * 60)
+            log.info(f"[process_single_view] START — view={view_cfg}")
+            log.info(f"[process_single_view] target_cfg={json.dumps(target_cfg, default=str)}")
+
             from operators.redshift_extract import extract_view
             from operators.rds_load import load_to_rds
 
@@ -141,10 +160,10 @@ def create_okr_dag(pipeline_name: str, config: dict):
             )
 
             if not rows:
-                print(f"[OKR] No rows from {view_label} — skipping")
+                log.info(f"[process_single_view] No rows from {view_label} — skipping")
                 return {"source_view": view_label, "status": "skipped", "rows": 0}
 
-            print(f'rows from redshift', rows)
+            log.info(f"[process_single_view] Extracted {len(rows)} rows from {view_label}")
 
             # Load to RDS
             result = load_to_rds(
@@ -154,12 +173,15 @@ def create_okr_dag(pipeline_name: str, config: dict):
                 region=env["aws_region"],
             )
 
-            return {
+            output = {
                 "source_view": view_label,
                 "target_table": target_table,
                 "status": result["status"],
                 "rows_loaded": result.get("rows_loaded", 0),
             }
+            log.info(f"[process_single_view] OUTPUT: {json.dumps(output, default=str)}")
+            log.info("=" * 60)
+            return output
 
         # ── Wire the DAG ─────────────────────────────────────
         run_params = resolve_run_params()

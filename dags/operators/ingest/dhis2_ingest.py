@@ -41,8 +41,12 @@ def run(config: Dict, env_config: Dict, load_params: Dict) -> Dict:
     elif auth_type == "token":
         headers["Authorization"] = f"Bearer {secrets.get('DHIS2_TOKEN', '')}"
 
-    # Build query params
+    # Build query params (YAML defaults, overridden by runtime conf)
     params = dict(source_cfg.get("params", {}))
+    # Runtime overrides from dag_run.conf (e.g. period, dataSet, orgUnit)
+    runtime_params = load_params.get("source_params", {})
+    if runtime_params:
+        params.update(runtime_params)
 
     # Analytics dimensions
     dimensions = source_cfg.get("dimensions", [])

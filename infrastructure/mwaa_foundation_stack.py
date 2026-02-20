@@ -174,6 +174,18 @@ class MwaaFoundationStack(Stack):
             prune=False,
         )
 
+        self.deploy_sql = s3deploy.BucketDeployment(
+            self,
+            "DeploySql",
+            sources=[s3deploy.Source.asset(
+                str(PROJECT_ROOT / "sql"),
+                exclude=["__pycache__", "*.pyc"],
+            )],
+            destination_bucket=self.mwaa_bucket,
+            destination_key_prefix="dags/sql",
+            prune=False,
+        )
+
         requirements_content = (PROJECT_ROOT / "requirements.txt").read_text()
         self.deploy_requirements = s3deploy.BucketDeployment(
             self,
@@ -268,6 +280,7 @@ class MwaaFoundationStack(Stack):
                                     "glue:StartJobRun", "glue:GetJobRun", "glue:GetJob",
                                     "glue:CreateCrawler", "glue:UpdateCrawler", "glue:StartCrawler",
                                     "glue:GetCrawler", "glue:GetTable", "glue:GetTables",
+                                    "glue:GetPartitions", "glue:GetPartition",
                                 ],
                                 "Resource": "*",
                             },

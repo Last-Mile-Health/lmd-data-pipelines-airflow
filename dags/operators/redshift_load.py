@@ -90,9 +90,10 @@ def execute_load(
     post_sql = redshift_cfg.get("post_sql")
     if post_sql:
         if post_sql.startswith("sql/"):
-            sql_file_path = os.path.join(
-                os.path.dirname(__file__), "..", "..", post_sql
-            )
+            # In MWAA: dags/sql/..., locally: ../../sql/...
+            _mwaa_path = os.path.join(os.path.dirname(__file__), "..", post_sql)
+            _local_path = os.path.join(os.path.dirname(__file__), "..", "..", post_sql)
+            sql_file_path = _mwaa_path if os.path.exists(_mwaa_path) else _local_path
             with open(sql_file_path) as f:
                 post_sql = f.read()
         _execute_sql(client, workgroup, database, secret_arn, post_sql)
