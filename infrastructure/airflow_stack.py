@@ -16,6 +16,7 @@ from pathlib import Path
 from aws_cdk import (
     Stack,
     RemovalPolicy,
+    CfnOutput,
     aws_dynamodb as dynamodb,
     aws_glue as glue,
     aws_iam as iam,
@@ -69,6 +70,9 @@ class AirflowPipelineStack(Stack):
         # ── Glue IAM Role (always enforce trust policy + permissions) ──
         self.glue_role = self._ensure_glue_role()
 
+        # ── Redshift Spectrum IAM Role (S3 + Glue catalog access) ──
+        self.redshift_role = self._ensure_redshift_role()
+
         # ── Glue Jobs per pipeline ──
         for pipeline_name in self.pipeline_names:
             self._create_pipeline_glue_jobs(pipeline_name)
@@ -78,6 +82,11 @@ class AirflowPipelineStack(Stack):
         Tags.of(self).add("ManagedBy", "CDK")
         Tags.of(self).add("Environment", environment)
         Tags.of(self).add("Component", "airflow")
+
+        # ── Outputs ──
+        CfnOutput(self, "RedshiftSpectrumRoleArn",
+                  value=self.redshift_role.role_arn,
+                  export_name=f"{self.prefix}-redshift-spectrum-role-arn")
 
     def _create_or_import_bucket(self, suffix: str) -> s3.IBucket:
         """Create or import an S3 bucket."""
@@ -236,6 +245,76 @@ class AirflowPipelineStack(Stack):
         return iam.Role.from_role_arn(
             self, "GlueETLRole",
             role_arn=f"arn:aws:iam::{self.account}:role/{glue_role_name}",
+        )
+
+    def _ensure_redshift_role(self) -> iam.IRole:
+        """Ensure the Redshift IAM role exists with S3 + Glue catalog permissions.
+
+        Used by Redshift Serverless for:
+        - Spectrum queries via Glue Data Catalog (external tables)
+        - S3 read access for data lake buckets
+        """
+        role_name = f"{self.prefix}-redshift-spectrum-role"
+        glue_db_prefix = self.prefix.replace("-", "_")
+
+        iam.CfnRole(
+            self,
+            "RedshiftSpectrumRoleCfn",
+            role_name=role_name,
+            assume_role_policy_document={
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"Service": "redshift.amazonaws.com"},
+                        "Action": "sts:AssumeRole",
+                    }
+                ],
+            },
+            policies=[
+                iam.CfnRole.PolicyProperty(
+                    policy_name="RedshiftSpectrumPolicy",
+                    policy_document={
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            # S3 read access for Spectrum and COPY/UNLOAD
+                            {
+                                "Effect": "Allow",
+                                "Action": [
+                                    "s3:GetObject", "s3:GetObject*",
+                                    "s3:ListBucket", "s3:GetBucketLocation",
+                                ],
+                                "Resource": [
+                                    f"arn:aws:s3:::{self.prefix}-{suffix}"
+                                    for suffix in ["raw", "processed", "curated", "assets"]
+                                ] + [
+                                    f"arn:aws:s3:::{self.prefix}-{suffix}/*"
+                                    for suffix in ["raw", "processed", "curated", "assets"]
+                                ],
+                            },
+                            # Glue Data Catalog for Spectrum external tables
+                            {
+                                "Effect": "Allow",
+                                "Action": [
+                                    "glue:GetTable", "glue:GetTables",
+                                    "glue:GetDatabase", "glue:GetDatabases",
+                                    "glue:GetPartition", "glue:GetPartitions",
+                                ],
+                                "Resource": [
+                                    f"arn:aws:glue:{self.region}:{self.account}:catalog",
+                                    f"arn:aws:glue:{self.region}:{self.account}:database/{glue_db_prefix}*",
+                                    f"arn:aws:glue:{self.region}:{self.account}:table/{glue_db_prefix}*/*",
+                                ],
+                            },
+                        ],
+                    },
+                ),
+            ],
+        )
+
+        return iam.Role.from_role_arn(
+            self, "RedshiftSpectrumRole",
+            role_arn=f"arn:aws:iam::{self.account}:role/{role_name}",
         )
 
     def _create_pipeline_glue_jobs(self, pipeline_name: str):

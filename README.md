@@ -156,7 +156,7 @@ These must already exist — this project connects to them, it does not create t
 | S3 Buckets | `{prefix}-raw`, `{prefix}-processed`, `{prefix}-curated`, `{prefix}-assets` | Created by CDK |
 | DynamoDB | `{prefix}-pipeline-metadata` | Watermark + run metadata |
 | Redshift Serverless | Secret: `REDSHIFT_SECRET_NAME` in `.env` | Contains workgroup, host, credentials |
-| Redshift IAM Role | `REDSHIFT_IAM_ROLE_ARN` in `.env` | For COPY from S3 |
+| Redshift IAM Role | `{prefix}-redshift-spectrum-role` | Created by CDK, for Spectrum + S3 access |
 | Glue Catalog | Database: `{prefix}` (underscored) | Auto-populated by crawlers |
 | Glue IAM Role | `{prefix}-glue-role` | Created by CDK, used by jobs + crawlers |
 | Secrets Manager | Kobo, DHIS2, Redshift secrets | Referenced by name in `.env` |
@@ -674,7 +674,6 @@ In the [MWAA console](https://console.aws.amazon.com/mwaa/) → your environment
 LMD_ENVIRONMENT = dev
 LMD_PROJECT_CODE = lmd-dp-airflow-v1
 REDSHIFT_SECRET_NAME = lmd-20-dev
-REDSHIFT_IAM_ROLE_ARN = arn:aws:iam::002190277880:role/lmd-v2-redshift-s3-dev
 KOBO_SECRET_NAME = lmd-dev-kobo-secrets
 DHIS2_SECRET_NAME = lmd-dev-dhis2-secrets
 ```

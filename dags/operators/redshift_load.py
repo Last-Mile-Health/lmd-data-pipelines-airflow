@@ -261,15 +261,21 @@ def _get_redshift_secret(secret_name, region):
 
 
 def _ensure_external_schema(client, workgroup, database, secret_arn, external_schema, glue_database, iam_role):
-    """Create a Spectrum external schema pointing to the Glue catalog if it doesn't exist."""
-    sql = f"""
-        CREATE EXTERNAL SCHEMA IF NOT EXISTS {external_schema}
+    """Create or replace a Spectrum external schema pointing to the Glue catalog.
+
+    Drops and recreates to ensure the IAM role is always up to date
+    (CREATE EXTERNAL SCHEMA IF NOT EXISTS won't update an existing schema's role).
+    """
+    drop_sql = f"DROP SCHEMA IF EXISTS {external_schema};"
+    create_sql = f"""
+        CREATE EXTERNAL SCHEMA {external_schema}
         FROM DATA CATALOG
         DATABASE '{glue_database}'
         IAM_ROLE '{iam_role}';
     """
-    print(f"[Spectrum] Ensuring external schema '{external_schema}' -> Glue DB '{glue_database}'")
-    _execute_sql(client, workgroup, database, secret_arn, sql)
+    print(f"[Spectrum] Creating external schema '{external_schema}' -> Glue DB '{glue_database}' with role '{iam_role}'")
+    _execute_sql(client, workgroup, database, secret_arn, drop_sql)
+    _execute_sql(client, workgroup, database, secret_arn, create_sql)
 
 
 def _build_spectrum_select(schema, table, external_schema, glue_table_name, s3_path):

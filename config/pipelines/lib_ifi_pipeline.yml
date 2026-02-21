@@ -49,7 +49,7 @@ curated:
 redshift:
   database: liberia                    # country-specific Redshift database
   schema: public
-  table: ifi_data_v1
+  table: ifi_data_v1                   #lib_ifi_community_form
   load_mode: merge                     # replace | append | merge
   merge_keys: ["_id"]
   distribution_key: "_id"

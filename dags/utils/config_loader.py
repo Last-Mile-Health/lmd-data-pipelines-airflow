@@ -86,10 +86,10 @@ def get_env_config() -> Dict[str, str]:
     prefix = f"{project_code}-{env}"
 
     # Environment-specific config (avoids reliance on env vars in MWAA)
+    account_id = _get_env("AWS_ACCOUNT_ID", "002190277880")
     ENV_CONFIGS = {
         "dev": {
             "redshift_secret_name": "lmd-20-dev",
-            "redshift_iam_role_arn": "arn:aws:iam::002190277880:role/lmd-v2-redshift-s3-dev",
         },
     }
     env_cfg = ENV_CONFIGS.get(env, ENV_CONFIGS["dev"])
@@ -109,7 +109,7 @@ def get_env_config() -> Dict[str, str]:
         "glue_database": f"{prefix}".replace("-", "_"),
         # Redshift
         "redshift_secret_name": env_cfg["redshift_secret_name"],
-        "redshift_iam_role_arn": env_cfg["redshift_iam_role_arn"],
+        "redshift_iam_role_arn": f"arn:aws:iam::{account_id}:role/{prefix}-redshift-spectrum-role",
         "redshift_database": _get_env("REDSHIFT_DATABASE", f"{prefix}".replace("-", "_")),
         # Region
         "aws_region": os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
