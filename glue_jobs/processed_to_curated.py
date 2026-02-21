@@ -82,9 +82,21 @@ def build_output_path(country, pipeline_name, execution_id, ingestion_time):
 # MAIN
 # ============================================
 if __name__ == "__main__":
+    from pyspark.sql.types import StructType, ArrayType, MapType
+
+    def ensure_primitive_types(df):
+        """Convert any remaining complex types to JSON strings."""
+        for field in df.schema.fields:
+            if isinstance(field.dataType, (StructType, ArrayType, MapType)):
+                print(f"[Type Safety] Converting complex column '{field.name}' to JSON string")
+                df = df.withColumn(field.name, F.to_json(F.col(f"`{field.name}`")))
+        return df
+
     sc = SparkContext()
     glueContext = GlueContext(sc)
     spark = glueContext.spark_session
+    # Write timestamps as TIMESTAMP_MICROS (Redshift COPY cannot read INT96)
+    spark.conf.set("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MICROS")
     job = Job(glueContext)
 
     args = getResolvedOptions(sys.argv, [
@@ -139,6 +151,9 @@ if __name__ == "__main__":
             df.withColumn("_curated_at", F.lit(datetime.utcnow().isoformat()))
             .withColumn("_curated_execution_id", F.lit(args["execution_id"]))
         )
+
+        # Ensure all columns are primitive types (Redshift COPY requirement)
+        df = ensure_primitive_types(df)
 
         final_count = df.count()
 

@@ -23,7 +23,20 @@ from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, ArrayType, MapType
 import boto3
+
+
+def ensure_primitive_types(df):
+    """Convert any remaining complex types to JSON strings before writing Parquet.
+
+    Redshift COPY FORMAT AS PARQUET cannot handle LIST, MAP, or STRUCT types.
+    """
+    for field in df.schema.fields:
+        if isinstance(field.dataType, (StructType, ArrayType, MapType)):
+            print(f"[Type Safety] Converting complex column '{field.name}' ({field.dataType}) to JSON string")
+            df = df.withColumn(field.name, F.to_json(F.col(f"`{field.name}`")))
+    return df
 
 
 def read_sql_from_s3(s3_path):
@@ -85,6 +98,8 @@ if __name__ == "__main__":
     sc = SparkContext()
     glueContext = GlueContext(sc)
     spark = glueContext.spark_session
+    # Write timestamps as TIMESTAMP_MICROS (Redshift COPY cannot read INT96)
+    spark.conf.set("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MICROS")
     job = Job(glueContext)
 
     args = getResolvedOptions(sys.argv, [
@@ -140,9 +155,12 @@ if __name__ == "__main__":
             .withColumn("_curated_execution_id", F.lit(args["execution_id"]))
         )
 
+        # STEP 4: Ensure all columns are primitive types (Redshift COPY requirement)
+        df = ensure_primitive_types(df)
+
         final_count = df.count()
 
-        # STEP 4: Write Curated Parquet
+        # STEP 5: Write Curated Parquet
         output_key = build_output_path(
             args["country"], args["pipeline_name"],
             args["execution_id"], args["ingestion_time"],

@@ -28,7 +28,7 @@ from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.sql import functions as F
-from pyspark.sql.types import StructType, ArrayType, StringType
+from pyspark.sql.types import StructType, ArrayType, MapType, StringType
 import boto3
 
 
@@ -56,12 +56,12 @@ def read_sql_from_s3(s3_path):
 
 
 def flatten_dataframe(df, max_depth=10):
-    """Recursively flatten StructType fields, convert ArrayType to JSON strings."""
+    """Recursively flatten StructType fields, convert ArrayType/MapType to JSON strings."""
     for _ in range(max_depth):
         complex_fields = [
             (f.name, f.dataType)
             for f in df.schema.fields
-            if isinstance(f.dataType, (StructType, ArrayType))
+            if isinstance(f.dataType, (StructType, ArrayType, MapType))
         ]
         if not complex_fields:
             break
@@ -73,9 +73,22 @@ def flatten_dataframe(df, max_depth=10):
                     for sub in field_type
                 ]
                 df = df.select("*", *expanded).drop(field_name)
-            elif isinstance(field_type, ArrayType):
-                df = df.withColumn(field_name, F.to_json(F.col(field_name)))
+            elif isinstance(field_type, (ArrayType, MapType)):
+                df = df.withColumn(field_name, F.to_json(F.col(f"`{field_name}`")))
 
+    return df
+
+
+def ensure_primitive_types(df):
+    """Convert any remaining complex types to JSON strings before writing Parquet.
+
+    Redshift COPY FORMAT AS PARQUET cannot handle LIST, MAP, or STRUCT types.
+    This is a safety net after flatten_dataframe and custom SQL.
+    """
+    for field in df.schema.fields:
+        if isinstance(field.dataType, (StructType, ArrayType, MapType)):
+            print(f"[Type Safety] Converting complex column '{field.name}' ({field.dataType}) to JSON string")
+            df = df.withColumn(field.name, F.to_json(F.col(f"`{field.name}`")))
     return df
 
 
@@ -116,6 +129,8 @@ if __name__ == "__main__":
     sc = SparkContext()
     glueContext = GlueContext(sc)
     spark = glueContext.spark_session
+    # Write timestamps as TIMESTAMP_MICROS (Redshift COPY cannot read INT96)
+    spark.conf.set("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MICROS")
     job = Job(glueContext)
 
     args = getResolvedOptions(sys.argv, [
@@ -210,7 +225,10 @@ if __name__ == "__main__":
             row_count = df.count()
             print(f"After custom SQL: {row_count:,} records")
 
-        # STEP 10: Write Parquet
+        # STEP 10: Ensure all columns are primitive types (Redshift COPY requirement)
+        df = ensure_primitive_types(df)
+
+        # STEP 11: Write Parquet
         output_key = build_output_path(
             args["country"], args["pipeline_name"],
             args["execution_id"], args["ingestion_time"],

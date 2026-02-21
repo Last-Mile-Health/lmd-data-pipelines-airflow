@@ -361,3 +361,4 @@ class MwaaFoundationStack(Stack):
             self, "MwaaExecutionRole",
             role_arn=f"arn:aws:iam::{self.account}:role/{role_name}",
         )
+

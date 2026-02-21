@@ -50,21 +50,26 @@ def execute_load(
 
     client = boto3.client("redshift-data", region_name=env_config["aws_region"])
 
+    # Get current Glue columns (types match the latest Parquet schema from crawler)
+    glue_database = env_config["glue_database"]
+    glue_columns, glue_table_name = _get_glue_columns(
+        glue_database, config["pipeline"]["name"],
+        env_config["aws_region"],
+    )
+
     # Auto-create Redshift table or add new columns from Glue catalog (grow-only)
-    # glue_col_names = table-level (superset), used for schema sync only
     _ensure_table_exists(
         client, workgroup, database, secret_arn,
-        schema, table,
-        env_config["glue_database"], config["pipeline"]["name"],
-        env_config["aws_region"],
+        schema, table, glue_columns,
         sort_keys=redshift_cfg.get("sort_keys"),
         distribution_style=redshift_cfg.get("distribution_style"),
     )
 
-    # Get partition-level columns (= current Parquet schema) for merge INSERT
-    parquet_col_names = _get_glue_partition_columns(
-        env_config["glue_database"], config["pipeline"]["name"],
-        env_config["aws_region"],
+    # Ensure Spectrum external schema exists for loading via Glue catalog
+    external_schema = f"spectrum_{glue_database}"
+    _ensure_external_schema(
+        client, workgroup, database, secret_arn,
+        external_schema, glue_database, iam_role,
     )
 
     # Run pre-SQL if configured
@@ -72,16 +77,22 @@ def execute_load(
     if pre_sql:
         _execute_sql(client, workgroup, database, secret_arn, pre_sql)
 
+    # Spectrum params used by all load modes (replaces COPY FROM PARQUET)
+    spectrum_params = {
+        "external_schema": external_schema,
+        "glue_table_name": glue_table_name,
+    }
+
     if load_mode == "replace":
-        _load_replace(client, workgroup, database, secret_arn, schema, table, curated_s3_path, iam_role)
+        _load_replace(client, workgroup, database, secret_arn, schema, table, curated_s3_path, iam_role, spectrum_params)
 
     elif load_mode == "append":
-        _load_append(client, workgroup, database, secret_arn, schema, table, curated_s3_path, iam_role)
+        _load_append(client, workgroup, database, secret_arn, schema, table, curated_s3_path, iam_role, spectrum_params)
 
     elif load_mode == "merge":
         if not merge_keys:
             raise ValueError("merge_keys required for load_mode=merge")
-        _load_merge(client, workgroup, database, secret_arn, schema, table, curated_s3_path, iam_role, merge_keys, parquet_col_names)
+        _load_merge(client, workgroup, database, secret_arn, schema, table, curated_s3_path, iam_role, merge_keys, glue_columns, spectrum_params)
 
     else:
         raise ValueError(f"Unknown load_mode: {load_mode}")
@@ -151,7 +162,8 @@ def _get_glue_columns(glue_database, pipeline_name, region):
     new columns are added, old ones are never dropped).
 
     Returns:
-        List of dicts with 'Name' and 'Type' keys.
+        Tuple of (columns, glue_table_name) where columns is a list of dicts
+        with 'Name' and 'Type' keys.
     """
     glue_client = boto3.client("glue", region_name=region)
     response = glue_client.get_tables(
@@ -166,58 +178,8 @@ def _get_glue_columns(glue_database, pipeline_name, region):
         )
 
     glue_table = sorted(response["TableList"], key=lambda t: t.get("UpdateTime", ""), reverse=True)[0]
-    return glue_table["StorageDescriptor"]["Columns"]
+    return glue_table["StorageDescriptor"]["Columns"], glue_table["Name"]
 
-
-def _get_glue_partition_columns(glue_database, pipeline_name, region):
-    """Get columns from the LATEST Glue partition (matches the current Parquet files).
-
-    When the Glue table accumulates columns from historical partitions (schema
-    evolution), the table-level columns are a superset.  This function returns
-    only the columns from the most recent partition, which match the actual
-    Parquet files being loaded.
-
-    Falls back to table-level columns if the table is not partitioned.
-
-    Returns:
-        List of column name strings.
-    """
-    glue_client = boto3.client("glue", region_name=region)
-    response = glue_client.get_tables(
-        DatabaseName=glue_database,
-        Expression=f"{pipeline_name}_*",
-    )
-
-    if not response["TableList"]:
-        raise RuntimeError(
-            f"No Glue catalog table found matching '{pipeline_name}_*' in database '{glue_database}'."
-        )
-
-    glue_table = sorted(response["TableList"], key=lambda t: t.get("UpdateTime", ""), reverse=True)[0]
-    table_name = glue_table["Name"]
-
-    # Try to get partition-level columns (most recent partition = current Parquet schema)
-    try:
-        partitions = glue_client.get_partitions(
-            DatabaseName=glue_database,
-            TableName=table_name,
-            MaxResults=1,
-            Segment={"SegmentNumber": 0, "TotalSegments": 1},
-        )
-        # Sort by creation time descending to get latest partition
-        part_list = partitions.get("Partitions", [])
-        if part_list:
-            latest = sorted(part_list, key=lambda p: p.get("CreationTime", ""), reverse=True)[0]
-            cols = [col["Name"] for col in latest["StorageDescriptor"]["Columns"]]
-            print(f"[Glue] Using partition-level columns ({len(cols)} cols) for {table_name}")
-            return cols
-    except Exception as e:
-        print(f"[Glue] Could not fetch partitions for {table_name}: {e}")
-
-    # Fall back to table-level columns
-    cols = [col["Name"] for col in glue_table["StorageDescriptor"]["Columns"]]
-    print(f"[Glue] Using table-level columns ({len(cols)} cols) for {table_name} (no partitions)")
-    return cols
 
 
 def _get_redshift_columns(client, workgroup, database, secret_arn, schema, table):
@@ -234,7 +196,7 @@ def _get_redshift_columns(client, workgroup, database, secret_arn, schema, table
 
 def _ensure_table_exists(
     client, workgroup, database, secret_arn,
-    schema, table, glue_database, pipeline_name, region,
+    schema, table, glue_columns,
     sort_keys=None, distribution_style=None,
 ):
     """Create the Redshift table if it doesn't exist, or add new columns if schema drifted.
@@ -243,7 +205,6 @@ def _ensure_table_exists(
     - New columns in Glue are ADDed to Redshift (grow-only, never drop).
     - Historical columns in Redshift are preserved even if absent from Glue.
     """
-    glue_columns = _get_glue_columns(glue_database, pipeline_name, region)
 
     # Check if table already exists
     check_sql = f"""
@@ -299,68 +260,89 @@ def _get_redshift_secret(secret_name, region):
 
 
 
-def _load_replace(client, workgroup, database, secret_arn, schema, table, s3_path, iam_role, glue_col_names=None):
-    """TRUNCATE + COPY + ANALYZE.
-
-    No explicit column list — Redshift COPY with FORMAT AS PARQUET matches
-    columns by name automatically.  Table columns absent from the Parquet
-    file receive NULL; extra Parquet columns are skipped.
+def _ensure_external_schema(client, workgroup, database, secret_arn, external_schema, glue_database, iam_role):
+    """Create a Spectrum external schema pointing to the Glue catalog if it doesn't exist."""
+    sql = f"""
+        CREATE EXTERNAL SCHEMA IF NOT EXISTS {external_schema}
+        FROM DATA CATALOG
+        DATABASE '{glue_database}'
+        IAM_ROLE '{iam_role}';
     """
+    print(f"[Spectrum] Ensuring external schema '{external_schema}' -> Glue DB '{glue_database}'")
+    _execute_sql(client, workgroup, database, secret_arn, sql)
+
+
+def _build_spectrum_select(schema, table, external_schema, glue_table_name, s3_path):
+    """Build a SELECT from the Spectrum external table filtered to the given S3 path.
+
+    Uses the Redshift target table's column list to handle schema drift:
+    only columns that exist in both the target table and the external table
+    are selected. This is safe because _ensure_table_exists already added
+    any new Glue columns to the target.
+    """
+    # Use the "$path" pseudo-column to filter only files under the curated S3 path
+    # Ensure s3_path ends with / for prefix matching
+    s3_prefix = s3_path.rstrip("/") + "/"
+    return (
+        f'SELECT * FROM {external_schema}."{glue_table_name}" '
+        f"WHERE \"$path\" LIKE '{s3_prefix}%'"
+    )
+
+
+def _load_replace(client, workgroup, database, secret_arn, schema, table, s3_path, iam_role, spectrum_params=None):
+    """TRUNCATE + INSERT via Spectrum + ANALYZE.
+
+    Uses Redshift Spectrum to read Parquet through the Glue catalog external
+    table, bypassing COPY FORMAT AS PARQUET (which cannot handle complex
+    Parquet types or INT96 timestamps).
+    """
+    ext_schema = spectrum_params["external_schema"]
+    glue_table = spectrum_params["glue_table_name"]
+    spectrum_select = _build_spectrum_select(schema, table, ext_schema, glue_table, s3_path)
+
     sql = f"""
         BEGIN;
         TRUNCATE TABLE {schema}.{table};
-        COPY {schema}.{table}
-        FROM '{s3_path}'
-        IAM_ROLE '{iam_role}'
-        FORMAT AS PARQUET;
+        INSERT INTO {schema}.{table} ({spectrum_select});
         COMMIT;
     """
+    print(f"[Replace] Loading {schema}.{table} via Spectrum from {ext_schema}.\"{glue_table}\"")
     _execute_sql(client, workgroup, database, secret_arn, sql)
     _execute_sql(client, workgroup, database, secret_arn, f"ANALYZE {schema}.{table};")
 
 
-def _load_append(client, workgroup, database, secret_arn, schema, table, s3_path, iam_role, glue_col_names=None):
-    """Direct COPY (append).
+def _load_append(client, workgroup, database, secret_arn, schema, table, s3_path, iam_role, spectrum_params=None):
+    """INSERT via Spectrum (append).
 
-    No explicit column list — Parquet name-based matching handles drift.
+    Uses Spectrum external table instead of COPY.
     """
-    sql = f"""
-        COPY {schema}.{table}
-        FROM '{s3_path}'
-        IAM_ROLE '{iam_role}'
-        FORMAT AS PARQUET;
-    """
+    ext_schema = spectrum_params["external_schema"]
+    glue_table = spectrum_params["glue_table_name"]
+    spectrum_select = _build_spectrum_select(schema, table, ext_schema, glue_table, s3_path)
+
+    sql = f"INSERT INTO {schema}.{table} ({spectrum_select});"
+    print(f"[Append] Loading {schema}.{table} via Spectrum")
     _execute_sql(client, workgroup, database, secret_arn, sql)
 
 
-def _load_merge(client, workgroup, database, secret_arn, schema, table, s3_path, iam_role, merge_keys, parquet_col_names=None):
-    """COPY into staging → DELETE matching → INSERT from staging.
+def _load_merge(client, workgroup, database, secret_arn, schema, table, s3_path, iam_role, merge_keys, glue_columns=None, spectrum_params=None):
+    """Spectrum SELECT into staging → DELETE matching → INSERT from staging.
 
-    Schema drift strategy:
-    - Staging table is created with ONLY the current Parquet columns (from
-      the latest Glue partition), so COPY column count matches the Parquet.
-    - INSERT uses an explicit column list so that historical columns in the
-      Redshift target table are preserved (not overwritten with NULLs).
-    - The main table's schema is kept in sync with Glue separately by
-      _ensure_table_exists (grow-only ADD COLUMN).
+    Uses Redshift Spectrum to read Parquet data through the Glue catalog,
+    completely bypassing COPY FORMAT AS PARQUET. Spectrum handles all Parquet
+    types natively (complex types, INT96 timestamps, etc.).
     """
+    ext_schema = spectrum_params["external_schema"]
+    glue_table = spectrum_params["glue_table_name"]
     staging_table = f"{table}_staging_{int(time.time())}"
 
-    if parquet_col_names:
-        col_list = ", ".join(f'"{c}"' for c in parquet_col_names)
-        create_staging = (
-            f"CREATE TEMP TABLE {staging_table} AS "
-            f"SELECT {col_list} FROM {schema}.{table} WHERE 1=0"
-        )
-        insert_stmt = (
-            f"INSERT INTO {schema}.{table} ({col_list}) "
-            f"SELECT {col_list} FROM {staging_table}"
-        )
-        print(f"[Merge] Staging table with {len(parquet_col_names)} Parquet columns "
-              f"(target table may have more historical columns)")
+    # Build column list from Glue catalog
+    if glue_columns:
+        col_names = ", ".join(f'"{col["Name"]}"' for col in glue_columns)
     else:
-        create_staging = f"CREATE TEMP TABLE {staging_table} (LIKE {schema}.{table})"
-        insert_stmt = f"INSERT INTO {schema}.{table} SELECT * FROM {staging_table}"
+        col_names = "*"
+
+    s3_prefix = s3_path.rstrip("/") + "/"
 
     join_condition = " AND ".join(
         f"{schema}.{table}.{k} = {staging_table}.{k}" for k in merge_keys
@@ -369,23 +351,25 @@ def _load_merge(client, workgroup, database, secret_arn, schema, table, s3_path,
     sql = f"""
         BEGIN;
 
-        {create_staging};
+        CREATE TEMP TABLE {staging_table} (LIKE {schema}.{table});
 
-        COPY {staging_table}
-        FROM '{s3_path}'
-        IAM_ROLE '{iam_role}'
-        FORMAT AS PARQUET;
+        INSERT INTO {staging_table} ({col_names})
+        SELECT {col_names}
+        FROM {ext_schema}."{glue_table}"
+        WHERE "$path" LIKE '{s3_prefix}%';
 
         DELETE FROM {schema}.{table}
         USING {staging_table}
         WHERE {join_condition};
 
-        {insert_stmt};
+        INSERT INTO {schema}.{table} ({col_names})
+        SELECT {col_names} FROM {staging_table};
 
         DROP TABLE {staging_table};
 
         COMMIT;
     """
+    print(f"[Merge] Loading {schema}.{table} via Spectrum ({len(glue_columns) if glue_columns else '?'} columns)")
     _execute_sql(client, workgroup, database, secret_arn, sql)
 
 

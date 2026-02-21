@@ -45,9 +45,11 @@ def run_transforms(
     workgroup = secret_values["workgroupName"]
     client = boto3.client("redshift-data", region_name=env_config["aws_region"])
 
-    # Resolve SQL directory relative to the DAG file location
+    # Resolve SQL directory — works in MWAA (dags/sql/), Docker (../../sql/), and local
     dags_dir = os.path.dirname(os.path.dirname(__file__))
-    abs_sql_dir = os.path.join(dags_dir, sql_dir)
+    _mwaa_path = os.path.join(dags_dir, sql_dir)
+    _local_path = os.path.join(dags_dir, "..", sql_dir)
+    abs_sql_dir = _mwaa_path if os.path.isdir(_mwaa_path) else _local_path
 
     # Find SQL files
     pattern = os.path.join(abs_sql_dir, f"*{select}*.sql" if select else "*.sql")
