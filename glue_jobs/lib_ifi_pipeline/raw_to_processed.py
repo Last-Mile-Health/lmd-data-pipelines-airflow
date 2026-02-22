@@ -195,7 +195,7 @@ if __name__ == "__main__":
         df = trim_string_columns(df)
 
         # STEP 6: Drop fully-null columns
-        df = drop_null_columns(df)
+        # df = drop_null_columns(df)
 
         # STEP 7: Deduplicate
         dedup_key = args.get("dedup_key", "")
