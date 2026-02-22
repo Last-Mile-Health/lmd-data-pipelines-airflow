@@ -134,10 +134,20 @@ def create_dhis2_dag(pipeline_name: str, config: dict):
             }
 
             # Pass runtime overrides for source params (period, dataSet, orgUnit, etc.)
+            # period can be a single string "202601" or a list ["202601", "202602"]
             source_params = conf.get("source_params", {})
             if source_params:
                 params["source_params"] = source_params
                 log.info(f"[resolve_load_params] Runtime source_params overrides: {source_params}")
+
+                # If user explicitly provided period(s), normalize to a list
+                if "period" in source_params:
+                    user_periods = source_params["period"]
+                    if isinstance(user_periods, str):
+                        user_periods = [p.strip() for p in user_periods.split(",") if p.strip()]
+                    source_params["period"] = user_periods
+                    params["period_list"] = user_periods
+                    log.info(f"[resolve_load_params] User-specified periods: {user_periods}")
 
             if cdc_strategy == "incremental":
                 params["mode"] = "incremental"

@@ -14,6 +14,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
     AIRFLOW__WEBSERVER__RBAC: 'true'
+    AIRFLOW__WEBSERVER__SHOW_TRIGGER_FORM_IF_NO_PARAMS: 'true'
     # SMTP for email notifications
     AIRFLOW__SMTP__SMTP_HOST: ${SMTP_HOST:-email-smtp.us-east-1.amazonaws.com}
     AIRFLOW__SMTP__SMTP_PORT: ${SMTP_PORT:-465}

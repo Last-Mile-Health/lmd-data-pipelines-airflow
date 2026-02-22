@@ -57,20 +57,25 @@ def run(config: Dict, env_config: Dict, load_params: Dict) -> Dict:
                 params["dimension"].append(dim)
 
     # CDC strategy-aware param handling
+    # Note: runtime source_params (already merged above) take priority.
+    # If the user explicitly passed period(s) via source_params, skip CDC period logic.
+    user_set_period = "period" in runtime_params
     cdc_strategy = load_params.get("cdc_strategy", load_params.get("mode", "full"))
 
     if cdc_strategy == "incremental":
-        # Remove static period so all periods are scanned; filter by lastUpdated
-        params.pop("period", None)
+        if not user_set_period:
+            # Remove static period so all periods are scanned; filter by lastUpdated
+            params.pop("period", None)
         if load_params.get("start_after"):
             params["lastUpdated"] = load_params["start_after"]
 
     elif cdc_strategy == "rolling_window":
-        # Replace static period with computed period list (repeated params)
-        params.pop("period", None)
-        period_list = load_params.get("period_list", [])
-        if period_list:
-            params["period"] = period_list
+        if not user_set_period:
+            # Replace static period with computed period list (repeated params)
+            params.pop("period", None)
+            period_list = load_params.get("period_list", [])
+            if period_list:
+                params["period"] = period_list
 
     # Fetch data
     url = f"{base_url}{endpoint}"

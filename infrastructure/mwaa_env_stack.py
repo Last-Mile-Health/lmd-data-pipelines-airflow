@@ -84,6 +84,7 @@ class MwaaEnvironmentStack(Stack):
                 "core.default_timezone": "utc",
                 "core.load_examples": "false",
                 "core.dagbag_import_timeout": "120",
+                "webserver.show_trigger_form_if_no_params": "true",
                 # SMTP
                 "smtp.smtp_host": "email-smtp.us-east-1.amazonaws.com",
                 "smtp.smtp_port": "465",
