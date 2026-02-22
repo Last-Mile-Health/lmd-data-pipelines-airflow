@@ -21,7 +21,7 @@ source:
 
 # ── Ingestion Mode ──
 ingestion:
-  mode: full                    # full | incremental
+  mode: incremental                    # full | incremental
   incremental_key: "_submission_time"  # column used for watermark
   partition_by:
     - country
