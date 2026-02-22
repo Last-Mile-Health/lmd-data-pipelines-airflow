@@ -49,13 +49,15 @@ curated:
 redshift:
   database: liberia                    # country-specific Redshift database
   schema: public
-  table: ifi_data_v1                   #lib_ifi_community_form
+  table: lib_ifi_community_data                   #lib_ifi_community_form
   load_mode: merge                     # replace | append | merge
   merge_keys: ["_id"]
   distribution_key: "_id"
   sort_keys: ["_submission_time"]
   pre_sql: null
-  post_sql: null
+  post_sql:
+    - sql/redshift/views/lib_ifi_vw_kpi_report.sql
+    - sql/redshift/views/lib_ifi_vw_kpi_fyq_report.sql
 
 # ── Schedule ──
 schedule:

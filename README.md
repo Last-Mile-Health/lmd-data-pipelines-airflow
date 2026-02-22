@@ -351,7 +351,7 @@ Each pipeline targets a **country-specific Redshift database** configured in its
 redshift:
   database: liberia           # country-specific database
   schema: public
-  table: ifi_data_v1
+  table: lib_ifi_community_data
   load_mode: merge
   merge_keys: ["_id"]
 ```

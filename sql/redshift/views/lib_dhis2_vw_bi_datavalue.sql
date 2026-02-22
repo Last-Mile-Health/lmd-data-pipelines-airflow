@@ -1,4 +1,4 @@
-CREATE OR REPLACE VIEW public.dhis2_vw_bi_datavalue AS
+CREATE OR REPLACE VIEW public.lib_cbis_datavalue AS
 SELECT
     f.dataelement,
     de.displayname   AS dataelement_name,

@@ -97,17 +97,19 @@ def execute_load(
     else:
         raise ValueError(f"Unknown load_mode: {load_mode}")
 
-    # Run post-SQL if configured (supports inline SQL or file path starting with sql/)
+    # Run post-SQL if configured (supports inline SQL, file path, or list of paths)
     post_sql = redshift_cfg.get("post_sql")
     if post_sql:
-        if post_sql.startswith("sql/"):
-            # In MWAA: dags/sql/..., locally: ../../sql/...
-            _mwaa_path = os.path.join(os.path.dirname(__file__), "..", post_sql)
-            _local_path = os.path.join(os.path.dirname(__file__), "..", "..", post_sql)
-            sql_file_path = _mwaa_path if os.path.exists(_mwaa_path) else _local_path
-            with open(sql_file_path) as f:
-                post_sql = f.read()
-        _execute_sql(client, workgroup, database, secret_arn, post_sql)
+        sql_entries = post_sql if isinstance(post_sql, list) else [post_sql]
+        for sql_entry in sql_entries:
+            if sql_entry.startswith("sql/"):
+                # In MWAA: dags/sql/..., locally: ../../sql/...
+                _mwaa_path = os.path.join(os.path.dirname(__file__), "..", sql_entry)
+                _local_path = os.path.join(os.path.dirname(__file__), "..", "..", sql_entry)
+                sql_file_path = _mwaa_path if os.path.exists(_mwaa_path) else _local_path
+                with open(sql_file_path) as f:
+                    sql_entry = f.read()
+            _execute_sql(client, workgroup, database, secret_arn, sql_entry)
 
     # Compute max watermark from the loaded data
     max_watermark = None

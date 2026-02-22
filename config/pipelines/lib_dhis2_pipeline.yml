@@ -113,7 +113,7 @@ redshift:
   distribution_key: null
   sort_keys: ["period", "dataelement", "orgunit"]
   pre_sql: null
-  post_sql: sql/redshift/views/dhis2_vw_bi_datavalue.sql
+  post_sql: sql/redshift/views/lib_dhis2_vw_bi_datavalue.sql
 
 # ── Schedule ──
 schedule:
