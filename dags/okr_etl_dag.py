@@ -23,6 +23,31 @@ from utils.config_loader import load_all_pipeline_configs, get_env_config
 log = logging.getLogger(__name__)
 
 
+def _pivot_to_indicator_rows(rows, view_cfg):
+    """Pivot wide-format view rows into long-format OKR indicator rows.
+
+    For each source row, emits one output row per indicator_id defined in
+    view_cfg['indicator_mapping'].  Dimension columns (view_cfg['dimension_cols'])
+    are carried through unchanged on every output row.
+
+    Output columns: indicator_id, <dimension_cols>, value, denominator, pct
+    """
+    indicator_mapping = view_cfg["indicator_mapping"]
+    dimension_cols = view_cfg.get("dimension_cols", [])
+
+    pivoted = []
+    for row in rows:
+        dims = {col: row.get(col) for col in dimension_cols}
+        for indicator_id, col_cfg in indicator_mapping.items():
+            pivoted.append({
+                "indicator_id": indicator_id,
+                **dims,
+                "numerator":   row.get(col_cfg.get("value_col")),
+                "denominator": row.get(col_cfg.get("denominator_col")),
+            })
+    return pivoted
+
+
 def _on_failure_callback(context, recipients, pipeline_name):
     """Send email notification on task failure."""
     task_instance = context.get("task_instance")
@@ -66,7 +91,7 @@ def create_okr_dag(pipeline_name: str, config: dict):
     email_recipients = alerts_cfg.get("email_recipients", [])
     source_views = config.get("source", {}).get("views", [])
     target_cfg = config.get("target", {})
-    transform_cfg = config.get("transforms", {})
+    transform_cfg = config.get("transforms") or {}
 
     default_args = {
         "owner": config["pipeline"].get("owner", "data-team"),
@@ -122,8 +147,16 @@ def create_okr_dag(pipeline_name: str, config: dict):
         # ── TASK 2: Refresh Redshift views (transforms) ────
         @task
         def refresh_redshift_views(run_params: dict, **context):
-            """Execute transform SQL files on Redshift (CREATE OR REPLACE VIEW, etc)."""
+            """Execute transform SQL files on Redshift (CREATE OR REPLACE VIEW, etc).
+
+            Skipped when no transforms section is present in the pipeline config.
+            """
             log.info(f"[refresh_redshift_views] START — INPUT run_params={json.dumps(run_params, default=str)}")
+
+            if not transform_cfg:
+                log.info("[refresh_redshift_views] No transforms configured — skipping")
+                return {"status": "skipped", "files_executed": []}
+
             from operators.dbt_runner import run_transforms
 
             sql_dir = transform_cfg.get("sql_dir", "sql/okr_transforms")
@@ -147,7 +180,6 @@ def create_okr_dag(pipeline_name: str, config: dict):
             log.info(f"[process_single_view] target_cfg={json.dumps(target_cfg, default=str)}")
 
             from operators.redshift_extract import extract_view
-            from operators.rds_load import load_to_rds
 
             target_table = view_cfg["target_table"]
             view_label = f"{view_cfg.get('database', '')}.{view_cfg.get('schema', 'public')}.{view_cfg['view']}"
@@ -165,19 +197,36 @@ def create_okr_dag(pipeline_name: str, config: dict):
 
             log.info(f"[process_single_view] Extracted {len(rows)} rows from {view_label}")
 
-            # Load to RDS
-            result = load_to_rds(
-                rows=rows,
-                target_cfg=target_cfg,
-                target_table=target_table,
-                region=env["aws_region"],
-            )
+            # Pivot to long-format indicator rows if indicator_mapping is configured
+            if view_cfg.get("indicator_mapping"):
+                rows = _pivot_to_indicator_rows(rows, view_cfg)
+                log.info(f"[process_single_view] Pivoted to {len(rows)} indicator rows "
+                         f"({list(view_cfg['indicator_mapping'].keys())})")
+
+            # Load to RDS — route based on write_mode
+            write_mode = target_cfg.get("write_mode", "replace")
+            if write_mode == "okr_monthly_update":
+                from operators.rds_load import update_okr_monthly_update
+                result = update_okr_monthly_update(
+                    rows=rows,
+                    target_cfg=target_cfg,
+                    region=env["aws_region"],
+                )
+            else:
+                from operators.rds_load import load_to_rds
+                result = load_to_rds(
+                    rows=rows,
+                    target_cfg=target_cfg,
+                    target_table=target_table,
+                    region=env["aws_region"],
+                )
 
             output = {
                 "source_view": view_label,
                 "target_table": target_table,
                 "status": result["status"],
-                "rows_loaded": result.get("rows_loaded", 0),
+                "rows_upserted": result.get("rows_upserted", result.get("rows_loaded", 0)),
+                "rows_skipped": result.get("rows_skipped", 0),
             }
             log.info(f"[process_single_view] OUTPUT: {json.dumps(output, default=str)}")
             log.info("=" * 60)

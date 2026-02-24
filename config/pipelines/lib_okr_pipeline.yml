@@ -1,0 +1,82 @@
+# ═══════════════════════════════════════════════════════════
+# IFI OKR Pipeline — IFI KPI Monthly Report → RDS lib-okr-data
+# ═══════════════════════════════════════════════════════════
+
+pipeline:
+  name: lib_okr_pipeline
+  description: "Maps IFI KPI monthly aggregates to OKR MonthlyUpdate rows in RDS lib-okr-data"
+  owner: "LMD"
+  tags: ["okr", "ifi", "liberia", "redshift-to-rds"]
+  dag_type: okr_redshift_to_rds
+
+# ── Source: Redshift View ──
+source:
+  type: redshift
+  views:
+    - database: liberia
+      schema: public
+      view: lib_ifi_okr_monthly_report
+      target_table: MonthlyUpdate
+
+      # Dimension columns passed through to every output row
+      dimension_cols:
+        - cy_year
+        - cy_month
+        - managed_county
+        - total_surveyed
+
+      # Maps OKR indicator_id → source columns.
+      # The pipeline will look up the Okr.id in RDS using indicator_id,
+      # then UPDATE MonthlyUpdate SET numerator, denominatorOverride, value
+      # WHERE okrId = <id> AND month = cy_month AND year = cy_year.
+      indicator_mapping:
+        "2.2":
+          value_col:       n_correct_ontime
+          denominator_col: total_surveyed
+        "2.3":
+          value_col:       n_has_chc
+          denominator_col: total_surveyed
+        "2.4":
+          value_col:       n_lifesaving_instock
+          denominator_col: total_surveyed
+        "2.6":
+          value_col:       n_two_plusvisits
+          denominator_col: d_two_plusvisits
+
+# ── Target: RDS PostgreSQL (lib-okr-data) ──
+# Host/port resolved from secret keys: writer, port.
+# Secret name injected from rds_okr_secret_name environment variable.
+target:
+  type: rds_postgres
+  secret_name: ${rds_okr_secret_name}
+  dbname: okr_data
+  schema: public
+  write_mode: okr_monthly_update
+
+  # Field in the "Okr" table used to look up the OKR primary key.
+  # The value matched against is the indicator_id (e.g. "2.1").
+  okr_lookup_field: okrId
+
+# ── Redshift Connection ──
+redshift:
+  database: liberia
+
+# No transforms needed — lib_ifi_vw_kpi_cy_monthly_report is refreshed
+# by lib_ifi_pipeline (runs at 6 AM UTC) as a post_sql step.
+
+# ── Schedule ──
+schedule:
+  cron: "0 7 * * *"                           # Daily at 7 AM UTC (after IFI pipeline)
+  catchup: false
+  retries: 2
+  retry_delay_minutes: 5
+  timeout_minutes: 60
+
+# ── Alerts ──
+alerts:
+  email_on_start: true
+  email_on_failure: true
+  email_on_retry: false
+  email_recipients:
+    - jdunyo@lastmilehealth.org
+    - lmdadmin@lastmilehealth.org
