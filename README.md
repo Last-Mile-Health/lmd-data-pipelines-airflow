@@ -367,26 +367,6 @@ redshift:
 
 If `database` is omitted, the global `REDSHIFT_DATABASE` from `.env` is used as fallback.
 
-### Redshift Authentication (Secrets Manager)
-
-The Redshift Data API authenticates via **AWS Secrets Manager**, not hardcoded credentials. The secret (configured as `REDSHIFT_SECRET_NAME` in `.env`) contains:
-
-| Key | Description |
-|-----|-------------|
-| `workgroupName` | Redshift Serverless workgroup name |
-| `host` | Endpoint hostname |
-| `port` | Connection port |
-| `username` | Database user |
-| `password` | Database password |
-| `engine` | `redshift` |
-| `namespaceName` | Serverless namespace |
-
-The pipeline automatically:
-1. Fetches the secret ARN and values from Secrets Manager
-2. Extracts `workgroupName` for the Data API
-3. Passes `SecretArn` to every `execute_statement` call
-
-No workgroup name or credentials in `.env` — everything comes from the secret.
 
 ### Auto-Create Tables (Glue Crawler)
 

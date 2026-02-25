@@ -31,7 +31,7 @@ source:
       # WHERE okrId = <id> AND month = cy_month AND year = cy_year.
       indicator_mapping:
         "2.2":
-          value_col:       n_correct_ontime
+          value_col:       n_correct_ontime_fy26
           denominator_col: total_surveyed
         "2.3":
           value_col:       n_has_chc

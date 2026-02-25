@@ -111,6 +111,30 @@
 --   month. Reported as the count of meetings; this flag
 --   converts that to a binary indicator (>0 = 1). NULL when
 --   the meetings field was not completed.
+--
+-- supply_actal20_so_stock_clean
+--   Free-text imputed version of stock_info_supply_actal20_so_stock.
+--   Where the raw stock field is NULL, the supervisor's open-text
+--   notes (txt_notes) are parsed for known phrases indicating AL20
+--   presence or absence. Positive and negative patterns are drawn
+--   directly from the Stata DQA script. Remaining NULLs (no raw
+--   value and no matching text) are NOT further imputed here —
+--   multiple imputation (Stata mi impute logit) is not replicable
+--   in SQL and must be applied offline if needed.
+--   lifesaving_instock_al uses this cleaned value.
+--
+-- ip | Implementing Partner
+--   County-to-partner mapping:
+--     IRC    — Bong(2), Grand Kru(7), Lofa(8), River Gee(14)
+--     LMH    — Grand Bassa(4), Rivercess(13)
+--     CHT/WB — Gbarpolu(3), Grand Cape Mount(5), Grand Gedeh(6)
+--     Plan   — Bomi(1), Margibi(9), Maryland(10), Montserrado(11),
+--               Nimba(12), Sinoe(15)
+--
+-- Row filter: data_collector_org IN (1, 3)
+--   Restricts to county-level supervision visits only (orgs 1 and 3).
+--   National-level visits are excluded from the curated layer,
+--   matching the Stata analysis scope.
 
 
 -- ============================================================
@@ -243,13 +267,36 @@ SELECT
 
     -- --------------------------------------------------------
     -- KPI 3.7b: lifesaving_instock_al
-    -- All lifesaving commodities using ACT AL only
+    -- All lifesaving commodities using ACT AL only.
+    -- Uses free-text imputed AL20 value (supply_actal20_so_stock_clean)
+    -- inlined here because Spark SQL cannot reference same-query aliases.
     -- --------------------------------------------------------
     CASE
-        WHEN CAST(stock_info_supply_actal20_so_stock AS INT)               = 1
-         AND CAST(stock_info_supply_amox_stock AS INT)   = 1
-         AND CAST(stock_info_supply_ors_stock  AS INT)   = 1
-         AND CAST(stock_info_supply_zinc_stock AS INT)   = 1 THEN 1
+        WHEN (
+            CASE
+                WHEN CAST(stock_info_supply_actal20_so_stock AS INT) IS NOT NULL
+                    THEN CAST(stock_info_supply_actal20_so_stock AS INT)
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%cha has act( al)%'                           THEN 1
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%cha has act(al)%'                            THEN 1
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%cha has act (al)%'                           THEN 1
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%cha has al not%'                             THEN 1
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%act( al) in stock not asaq%'                 THEN 1
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%al is available with cha%'                   THEN 1
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%cha has in stock act(al) not asaq%'          THEN 1
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%cha has al in stock not asaq%'               THEN 1
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%stock out of al in community%'               THEN 0
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%no malaria tablet of all age group%'         THEN 0
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%no iccm commodities%'                        THEN 0
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%no drugs for cha%'                           THEN 0
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%no drugs has been delivered to cha%'         THEN 0
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%stock out of iccm commodities%'              THEN 0
+                WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%only ors, zinc and amoxicillin are in stock%' THEN 0
+                ELSE NULL
+            END
+        ) = 1
+         AND CAST(stock_info_supply_amox_stock AS INT) = 1
+         AND CAST(stock_info_supply_ors_stock  AS INT) = 1
+         AND CAST(stock_info_supply_zinc_stock AS INT) = 1 THEN 1
         ELSE 0
     END AS lifesaving_instock_al,
 
@@ -336,6 +383,45 @@ SELECT
         WHEN health_services_communityengagement_meetings IS NULL THEN NULL
         WHEN CAST(health_services_communityengagement_meetings AS INT) > 0  THEN 1
         ELSE 0
-    END AS chc_meetings_oneplus
+    END AS chc_meetings_oneplus,
 
-FROM __TABLE__;
+    -- --------------------------------------------------------
+    -- supply_actal20_so_stock_clean
+    -- AL20 stock status with free-text imputation for NULLs.
+    -- Raw value is used when present; txt_notes is parsed otherwise.
+    -- --------------------------------------------------------
+    CASE
+        WHEN CAST(stock_info_supply_actal20_so_stock AS INT) IS NOT NULL
+            THEN CAST(stock_info_supply_actal20_so_stock AS INT)
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%cha has act( al)%'                           THEN 1
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%cha has act(al)%'                            THEN 1
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%cha has act (al)%'                           THEN 1
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%cha has al not%'                             THEN 1
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%act( al) in stock not asaq%'                 THEN 1
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%al is available with cha%'                   THEN 1
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%cha has in stock act(al) not asaq%'          THEN 1
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%cha has al in stock not asaq%'               THEN 1
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%stock out of al in community%'               THEN 0
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%no malaria tablet of all age group%'         THEN 0
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%no iccm commodities%'                        THEN 0
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%no drugs for cha%'                           THEN 0
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%no drugs has been delivered to cha%'         THEN 0
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%stock out of iccm commodities%'              THEN 0
+        WHEN LOWER(COALESCE(txt_notes, '')) LIKE '%only ors, zinc and amoxicillin are in stock%' THEN 0
+        ELSE NULL
+    END AS supply_actal20_so_stock_clean,
+
+    -- --------------------------------------------------------
+    -- ip: Implementing Partner
+    -- Derived from county code (basic_info_county / managed_county logic)
+    -- --------------------------------------------------------
+    CASE
+        WHEN CAST(basic_info_county AS INT) IN (2, 7, 8, 14)          THEN 'IRC'
+        WHEN CAST(basic_info_county AS INT) IN (4, 13)                 THEN 'LMH'
+        WHEN CAST(basic_info_county AS INT) IN (3, 5, 6)               THEN 'CHT/WB'
+        WHEN CAST(basic_info_county AS INT) IN (1, 9, 10, 11, 12, 15) THEN 'Plan'
+        ELSE NULL
+    END AS ip
+
+FROM __TABLE__
+WHERE CAST(data_collector_org AS INT) IN (1, 3);  -- county-level supervision only

@@ -1,10 +1,10 @@
 # ═══════════════════════════════════════════════════════════
-# IFI Pipeline — Implementation Fidelity Index (Kobo)
+# IFI Pipeline — Implementation Fidelity  (Kobo)
 # ═══════════════════════════════════════════════════════════
 
 pipeline:
   name: lib_ifi_pipeline
-  description: "Implementation Fidelity Index from Kobo Toolbox"
+  description: "Implementation Fidelity  from Kobo Toolbox"
   owner: "LMD"
   tags: ["kobo", "ifi", "liberia"]
 
