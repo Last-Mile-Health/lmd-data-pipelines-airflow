@@ -1,4 +1,16 @@
-.PHONY: up down build restart logs shell init test lint clean
+.PHONY: up down build restart logs shell init test lint clean check-env
+
+ifneq (,$(wildcard .env))
+  include .env
+  export
+endif
+
+# ── Fail-fast guard for required variables ──
+guard-%:
+	@[ -n "${$*}" ] || (echo "ERROR: $* is not set or empty in .env"; exit 1)
+
+check-env: guard-AWS_ACCESS_KEY_ID guard-AWS_SECRET_ACCESS_KEY guard-AWS_SESSION_TOKEN \
+           guard-LMD_PROJECT_CODE guard-LMD_ENVIRONMENT guard-AWS_DEFAULT_REGION
 
 # ── Docker Commands ──
 up:
@@ -53,24 +65,24 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 # ── Deploy Glue Scripts to S3 ──
-deploy-glue:
+deploy-glue: check-env
 	@echo "Uploading Glue scripts to S3..."
-	aws s3 sync glue_jobs/ s3://$${LMD_PROJECT_CODE}-$${LMD_ENVIRONMENT}-assets/glue_jobs/ --exclude "__pycache__/*" --exclude "*.pyc"
+	aws s3 sync glue_jobs/ s3://$(LMD_PROJECT_CODE)-$(LMD_ENVIRONMENT)-assets/glue_jobs/ --exclude "__pycache__/*" --exclude "*.pyc"
 	@echo "Done."
 
 # ── Deploy SQL to S3 ──
-deploy-sql:
+deploy-sql: check-env
 	@echo "Uploading SQL scripts to S3..."
-	aws s3 sync sql/ s3://$${LMD_PROJECT_CODE}-$${LMD_ENVIRONMENT}-assets/sql/ --exclude "__pycache__/*"
+	aws s3 sync sql/ s3://$(LMD_PROJECT_CODE)-$(LMD_ENVIRONMENT)-assets/sql/ --exclude "__pycache__/*"
 	@echo "Done."
 
 deploy-assets: deploy-glue deploy-sql
 
 # ── Deploy to MWAA ──
 # Syncs dags/, plugins/, config/, and requirements.txt to the MWAA S3 bucket
-MWAA_BUCKET = $${LMD_PROJECT_CODE}-$${LMD_ENVIRONMENT}-mwaa
+MWAA_BUCKET = $(LMD_PROJECT_CODE)-$(LMD_ENVIRONMENT)-mwaa
 
-deploy-mwaa: deploy-assets
+deploy-mwaa: check-env deploy-assets
 	@echo "Packaging plugins..."
 	cd plugins && zip -r ../plugins.zip . -x "__pycache__/*" "*.pyc" && cd ..
 	@echo "Uploading DAGs to s3://$(MWAA_BUCKET)/dags/..."
@@ -87,10 +99,10 @@ deploy-mwaa: deploy-assets
 	@echo "MWAA deployment complete. MWAA will pick up changes within ~30s."
 
 # Deploy MWAA infrastructure via CDK
-deploy-mwaa-infra:
-	cd infrastructure && cdk deploy $${LMD_PROJECT_CODE}-$${LMD_ENVIRONMENT}-mwaa --context env=$${LMD_ENVIRONMENT}
+deploy-mwaa-infra: check-env
+	cd infrastructure && cdk deploy $(LMD_PROJECT_CODE)-$(LMD_ENVIRONMENT)-mwaa --context env=$(LMD_ENVIRONMENT)
 
 # Deploy everything (infra + code)
-deploy-all:
-	cd infrastructure && cdk deploy --all --context env=$${LMD_ENVIRONMENT}
+deploy-all: check-env
+	cd infrastructure && cdk deploy --all --context env=$(LMD_ENVIRONMENT)
 	$(MAKE) deploy-mwaa

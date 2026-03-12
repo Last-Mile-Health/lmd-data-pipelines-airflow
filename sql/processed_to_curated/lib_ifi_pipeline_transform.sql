@@ -131,7 +131,7 @@
 --     Plan   — Bomi(1), Margibi(9), Maryland(10), Montserrado(11),
 --               Nimba(12), Sinoe(15)
 --
--- Row filter: data_collector_org IN (1, 3)
+-- Row filter: basic_info_data_collector_org IN (1, 3)
 --   Restricts to county-level supervision visits only (orgs 1 and 3).
 --   National-level visits are excluded from the curated layer,
 --   matching the Stata analysis scope.
@@ -424,4 +424,4 @@ SELECT
     END AS ip
 
 FROM __TABLE__
-WHERE CAST(data_collector_org AS INT) IN (1, 3);  -- county-level supervision only
+WHERE CAST(basic_info_data_collector_org AS INT) IN (1, 3);  -- county-level supervision only

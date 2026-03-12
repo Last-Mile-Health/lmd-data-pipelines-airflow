@@ -62,7 +62,7 @@ redshift:
 
 # ── Schedule ──
 schedule:
-  cron: "0 6 * * *"                    # Daily at 6 AM UTC
+  cron: "0 6 * * 0"                    # Every Sunday at 6 AM UTC
   catchup: false
   retries: 2
   retry_delay_minutes: 5

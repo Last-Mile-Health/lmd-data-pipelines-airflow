@@ -49,11 +49,37 @@ def _on_failure_callback(context, recipients, pipeline_name):
 
 def _on_start_callback(context, recipients, pipeline_name):
     """Send email notification when DAG run starts."""
+    dag_run = context.get("dag_run")
+    run_type = getattr(dag_run, "run_type", "unknown")
+    trigger_label = "Manual Trigger" if run_type == "manual" else "Scheduled"
+    conf = getattr(dag_run, "conf", None) or {}
+    conf_html = (
+        f"<pre>{json.dumps(conf, indent=2)}</pre>"
+        if conf
+        else "<p><i>No run config provided (defaults from YAML will be used)</i></p>"
+    )
     send_email(
         to=recipients,
         subject=f"[STARTED] Pipeline: {pipeline_name}",
         html_content=f"""
         <h3>Pipeline Started</h3>
+        <p><b>Pipeline:</b> {pipeline_name}</p>
+        <p><b>Trigger:</b> {trigger_label}</p>
+        <p><b>Execution Date:</b> {context.get('execution_date')}</p>
+        <p><b>Run ID:</b> {context.get('run_id')}</p>
+        <h4>Run Config</h4>
+        {conf_html}
+        """,
+    )
+
+
+def _on_success_callback(context, recipients, pipeline_name):
+    """Send email notification when DAG run completes successfully."""
+    send_email(
+        to=recipients,
+        subject=f"[SUCCESS] Pipeline: {pipeline_name}",
+        html_content=f"""
+        <h3>Pipeline Completed Successfully</h3>
         <p><b>Pipeline:</b> {pipeline_name}</p>
         <p><b>Execution Date:</b> {context.get('execution_date')}</p>
         <p><b>Run ID:</b> {context.get('run_id')}</p>
@@ -77,9 +103,12 @@ def create_dhis2_dag(pipeline_name: str, config: dict):
         "execution_timeout": timedelta(minutes=schedule_cfg.get("timeout_minutes", 120)),
     }
 
+    dag_callbacks = {}
     if email_recipients:
         if alerts_cfg.get("email_on_failure", True):
             default_args["on_failure_callback"] = lambda ctx: _on_failure_callback(ctx, email_recipients, pipeline_name)
+        if alerts_cfg.get("email_on_success", True):
+            dag_callbacks["on_success_callback"] = lambda ctx: _on_success_callback(ctx, email_recipients, pipeline_name)
         default_args["email"] = email_recipients
         default_args["email_on_failure"] = alerts_cfg.get("email_on_failure", True)
         default_args["email_on_retry"] = alerts_cfg.get("email_on_retry", False)
@@ -93,6 +122,7 @@ def create_dhis2_dag(pipeline_name: str, config: dict):
         tags=config["pipeline"].get("tags", []) + ["star-schema"],
         max_active_runs=1,
         doc_md=f"### DHIS2 Star-Schema Pipeline: `{pipeline_name}`\n\n{config['pipeline'].get('description', '')}",
+        **dag_callbacks,
     )
     def dhis2_pipeline():
 

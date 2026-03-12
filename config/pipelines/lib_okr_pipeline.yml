@@ -66,7 +66,7 @@ redshift:
 
 # ── Schedule ──
 schedule:
-  cron: "0 7 * * *"                           # Daily at 7 AM UTC (after IFI pipeline)
+  cron: "0 8 * * 0"                           # Every Sunday at 8 AM UTC (after IFI + DHIS2 pipelines)
   catchup: false
   retries: 2
   retry_delay_minutes: 5

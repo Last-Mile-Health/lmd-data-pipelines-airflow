@@ -84,7 +84,7 @@ redshift:
 
 # ── Schedule ──
 schedule:
-  cron: "0 6 * * *"
+  cron: "0 6 * * 0"
   catchup: false
   retries: 2
   retry_delay_minutes: 5
