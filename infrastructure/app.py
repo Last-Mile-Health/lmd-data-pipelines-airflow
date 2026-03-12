@@ -13,7 +13,12 @@ Usage:
     cdk deploy {PROJECT_CODE}-{env}-mwaa --context env=dev                 # MWAA environment only
 """
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 import aws_cdk as cdk
+
+# Load .env from repo root (one level up from infrastructure/)
+load_dotenv(Path(__file__).parent.parent / ".env")
 from airflow_stack import AirflowPipelineStack
 from mwaa_foundation_stack import MwaaFoundationStack
 from mwaa_env_stack import MwaaEnvironmentStack

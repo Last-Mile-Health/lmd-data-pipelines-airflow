@@ -5,6 +5,8 @@ Deploy this AFTER mwaa_foundation_stack so the S3 bucket, execution role,
 VPC subnets, and security group already exist.  This prevents CloudFormation
 early-validation errors (AWS::EarlyValidation::ResourceExistenceCheck).
 """
+import os
+
 from aws_cdk import (
     Stack,
     CfnOutput,
@@ -85,13 +87,13 @@ class MwaaEnvironmentStack(Stack):
                 "core.load_examples": "false",
                 "core.dagbag_import_timeout": "120",
                 "webserver.show_trigger_form_if_no_params": "true",
-                # SMTP
-                "smtp.smtp_host": "email-smtp.us-east-1.amazonaws.com",
-                "smtp.smtp_port": "465",
-                "smtp.smtp_starttls": "true",
-                "smtp.smtp_mail_from": "lmdadmin@lastmilehealth.org",
-                "smtp.smtp_user": "AKIAQBAUM7T4DBCZIZBX",
-                "smtp.smtp_password": "BAkCxyqpnGl4XtaETJvEwuLzwI81yxUHVW9Q+4Vsxhqw",
+                # SMTP — values loaded from .env via app.py
+                "smtp.smtp_host":      os.environ["SMTP_HOST"],
+                "smtp.smtp_port":      os.environ["SMTP_PORT"],
+                "smtp.smtp_starttls":  "true",
+                "smtp.smtp_mail_from": os.environ["SMTP_MAIL_FROM"],
+                "smtp.smtp_user":      os.environ["SMTP_USER"],
+                "smtp.smtp_password":  os.environ["SMTP_PASSWORD"],
             },
         )
 
