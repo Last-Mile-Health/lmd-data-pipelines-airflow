@@ -318,7 +318,10 @@ class MwaaFoundationStack(Stack):
                                     "secretsmanager:GetSecretValue",
                                     "secretsmanager:DescribeSecret",
                                 ],
-                                "Resource": f"arn:aws:secretsmanager:*:*:secret:lmd-*",
+                                "Resource": [
+                                    f"arn:aws:secretsmanager:*:*:secret:lmd-*",
+                                    f"arn:aws:secretsmanager:*:*:secret:lib-*",
+                                ],
                             },
                             # IAM PassRole for Glue
                             {

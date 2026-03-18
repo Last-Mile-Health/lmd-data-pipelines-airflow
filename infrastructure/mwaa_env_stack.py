@@ -94,6 +94,8 @@ class MwaaEnvironmentStack(Stack):
                 "smtp.smtp_mail_from": os.environ["SMTP_MAIL_FROM"],
                 "smtp.smtp_user":      os.environ["SMTP_USER"],
                 "smtp.smtp_password":  os.environ["SMTP_PASSWORD"],
+                # Pipeline secrets — resolved via ${VAR_NAME} in pipeline YAMLs
+                "env_var.rds_okr_secret_name": os.environ["RDS_OKR_SECRET_NAME"],
             },
         )
 
