@@ -11,6 +11,7 @@ If a resource already exists, it is imported. For IAM roles, the trust
 policy and permissions are always enforced via CfnRole to prevent drift.
 """
 import os
+import time
 from pathlib import Path
 
 from aws_cdk import (
@@ -107,14 +108,24 @@ class AirflowPipelineStack(Stack):
         )
 
     def _deploy_assets(self):
-        """Upload Glue scripts and SQL files to the assets bucket."""
+        """Upload Glue scripts and SQL files to the assets bucket.
+
+        A deploy-time marker (timestamp) is included as an extra source so the
+        asset hash always changes, forcing CDK to re-upload on every deploy even
+        if file contents haven't changed.
+        """
+        deploy_marker = s3deploy.Source.data("_deploy_marker.txt", str(time.time()))
+
         s3deploy.BucketDeployment(
             self,
             "DeployGlueScripts",
-            sources=[s3deploy.Source.asset(
-                str(PROJECT_ROOT / "glue_jobs"),
-                exclude=["__pycache__", "*.pyc", "__init__.py"],
-            )],
+            sources=[
+                s3deploy.Source.asset(
+                    str(PROJECT_ROOT / "glue_jobs"),
+                    exclude=["__pycache__", "*.pyc", "__init__.py"],
+                ),
+                deploy_marker,
+            ],
             destination_bucket=self.assets_bucket,
             destination_key_prefix="glue_jobs",
             prune=False,
@@ -123,10 +134,13 @@ class AirflowPipelineStack(Stack):
         s3deploy.BucketDeployment(
             self,
             "DeploySqlScripts",
-            sources=[s3deploy.Source.asset(
-                str(PROJECT_ROOT / "sql"),
-                exclude=["__pycache__", "*.pyc"],
-            )],
+            sources=[
+                s3deploy.Source.asset(
+                    str(PROJECT_ROOT / "sql"),
+                    exclude=["__pycache__", "*.pyc"],
+                ),
+                deploy_marker,
+            ],
             destination_bucket=self.assets_bucket,
             destination_key_prefix="sql",
             prune=False,

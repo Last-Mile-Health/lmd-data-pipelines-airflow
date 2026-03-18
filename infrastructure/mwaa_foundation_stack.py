@@ -7,6 +7,7 @@ is created in Stack B (mwaa_env_stack.py).
 S3/VPC/SG use import-if-exists (safe). IAM roles use CfnRole to always
 enforce trust policy and permissions on every deploy, preventing drift.
 """
+import time
 from pathlib import Path
 
 from aws_cdk import (
@@ -149,14 +150,24 @@ class MwaaFoundationStack(Stack):
                   export_name=f"{self.prefix}-mwaa-subnet-2")
 
     def _deploy_mwaa_assets(self):
-        """Upload DAGs, config, and requirements to the MWAA S3 bucket."""
+        """Upload DAGs, config, SQL, and requirements to the MWAA S3 bucket.
+
+        A deploy-time marker (timestamp) is included as an extra source so the
+        asset hash always changes, forcing CDK to re-upload on every deploy even
+        if file contents haven't changed.
+        """
+        deploy_marker = s3deploy.Source.data("_deploy_marker.txt", str(time.time()))
+
         self.deploy_dags = s3deploy.BucketDeployment(
             self,
             "DeployDags",
-            sources=[s3deploy.Source.asset(
-                str(PROJECT_ROOT / "dags"),
-                exclude=["__pycache__", "*.pyc"],
-            )],
+            sources=[
+                s3deploy.Source.asset(
+                    str(PROJECT_ROOT / "dags"),
+                    exclude=["__pycache__", "*.pyc"],
+                ),
+                deploy_marker,
+            ],
             destination_bucket=self.mwaa_bucket,
             destination_key_prefix="dags",
             prune=False,
@@ -165,10 +176,13 @@ class MwaaFoundationStack(Stack):
         self.deploy_config = s3deploy.BucketDeployment(
             self,
             "DeployConfig",
-            sources=[s3deploy.Source.asset(
-                str(PROJECT_ROOT / "config"),
-                exclude=["__pycache__", "*.pyc"],
-            )],
+            sources=[
+                s3deploy.Source.asset(
+                    str(PROJECT_ROOT / "config"),
+                    exclude=["__pycache__", "*.pyc"],
+                ),
+                deploy_marker,
+            ],
             destination_bucket=self.mwaa_bucket,
             destination_key_prefix="dags/config",
             prune=False,
@@ -177,10 +191,13 @@ class MwaaFoundationStack(Stack):
         self.deploy_sql = s3deploy.BucketDeployment(
             self,
             "DeploySql",
-            sources=[s3deploy.Source.asset(
-                str(PROJECT_ROOT / "sql"),
-                exclude=["__pycache__", "*.pyc"],
-            )],
+            sources=[
+                s3deploy.Source.asset(
+                    str(PROJECT_ROOT / "sql"),
+                    exclude=["__pycache__", "*.pyc"],
+                ),
+                deploy_marker,
+            ],
             destination_bucket=self.mwaa_bucket,
             destination_key_prefix="dags/sql",
             prune=False,

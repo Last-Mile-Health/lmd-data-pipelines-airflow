@@ -1,4 +1,37 @@
-.PHONY: up down build restart logs shell init test lint clean check-env
+.PHONY: up down build restart logs shell init test lint clean check-env help
+
+.DEFAULT_GOAL := help
+
+help:
+	@echo ""
+	@echo "Usage: make <command>"
+	@echo ""
+	@echo "Local Docker"
+	@echo "  up                 Start Airflow locally"
+	@echo "  up-local           Start Airflow + LocalStack (offline S3/DynamoDB)"
+	@echo "  down               Stop all containers"
+	@echo "  build              Rebuild Docker image from scratch"
+	@echo "  restart            Restart webserver + scheduler"
+	@echo "  logs               Tail scheduler + webserver logs"
+	@echo "  logs-scheduler     Tail scheduler logs only"
+	@echo "  logs-webserver     Tail webserver logs only"
+	@echo "  shell              Open a bash shell inside the container"
+	@echo "  init               First-time setup (copy .env, init Airflow DB)"
+	@echo "  clean              Stop containers, wipe volumes, clear caches"
+	@echo ""
+	@echo "Testing & Quality"
+	@echo "  test               Run tests inside Docker"
+	@echo "  test-local         Run tests locally"
+	@echo "  lint               Lint all Python code"
+	@echo ""
+	@echo "Deploy to AWS"
+	@echo "  deploy-glue        Upload Glue scripts to S3 assets bucket"
+	@echo "  deploy-sql         Upload SQL scripts to S3 assets bucket"
+	@echo "  deploy-assets      Upload Glue scripts + SQL to S3 assets bucket"
+	@echo "  deploy-mwaa        Upload DAGs, config, plugins, requirements to MWAA S3"
+	@echo "  deploy-mwaa-infra  Deploy MWAA CDK stack (VPC, IAM, MWAA environment)"
+	@echo "  deploy-all         Full deploy — CDK infra + all code to MWAA"
+	@echo ""
 
 ifneq (,$(wildcard .env))
   include .env
