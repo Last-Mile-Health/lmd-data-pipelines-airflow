@@ -6,7 +6,8 @@ pipeline:
   name: lib_dhis2_pipeline
   description: "DHIS2 DataValueSets from Liberia DHIS2 instance"
   owner: "LMD"
-  tags: ["dhis2", "liberia", "routine"]
+  program: "Liberia"
+  tags: []
   dag_type: dhis2                              # handled by dedicated dhis2_etl_dag.py
 
 # ── Data Source ──

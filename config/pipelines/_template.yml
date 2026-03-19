@@ -7,7 +7,7 @@
 pipeline:
   name: my_pipeline                    # Unique pipeline identifier
   description: "Description here"
-  owner: "data-team"
+  owner: "data-team"                 # Set to the program/country name e.g. "Liberia"
   tags: ["tag1", "tag2"]
 
 # ── Data Source ──

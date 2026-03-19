@@ -4,9 +4,9 @@
 
 pipeline:
   name: lib_ifi_pipeline
-  description: "Implementation Fidelity  from Kobo Toolbox"
-  owner: "LMD"
-  tags: ["kobo", "ifi", "liberia"]
+  description: "IFI Community Data from Kobo → Redshift lib_ifi_community_data table"
+  owner: "Liberia"
+  tags: []
 
 # ── Data Source ──
 source:

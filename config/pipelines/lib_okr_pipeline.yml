@@ -5,8 +5,8 @@
 pipeline:
   name: lib_okr_pipeline
   description: "Maps IFI KPI monthly aggregates to OKR MonthlyUpdate rows in RDS lib-okr-data"
-  owner: "LMD"
-  tags: ["okr", "ifi", "liberia", "redshift-to-rds"]
+  owner: "Liberia"
+  tags: []
   dag_type: okr_redshift_to_rds
 
 # ── Source: Redshift View ──

@@ -16,7 +16,7 @@ from airflow.decorators import dag, task
 from airflow.models import Variable
 from airflow.utils.email import send_email
 
-from utils.config_loader import load_all_pipeline_configs, get_env_config
+from utils.config_loader import load_all_pipeline_configs, get_env_config, build_flow_tags
 
 log = logging.getLogger(__name__)
 
@@ -110,10 +110,11 @@ def create_etl_dag(pipeline_name: str, config: dict):
     @dag(
         dag_id=f"etl_{pipeline_name}",
         default_args=default_args,
+        description=config["pipeline"].get("description", ""),
         schedule=schedule_cfg.get("cron"),
         start_date=datetime(2024, 1, 1),
         catchup=schedule_cfg.get("catchup", False),
-        tags=config["pipeline"].get("tags", []),
+        tags=config["pipeline"].get("tags", []) + build_flow_tags(config),
         max_active_runs=1,
         doc_md=f"""### ETL Pipeline: `{pipeline_name}`\n\n{config['pipeline'].get('description', '')}""",
         **dag_callbacks,
