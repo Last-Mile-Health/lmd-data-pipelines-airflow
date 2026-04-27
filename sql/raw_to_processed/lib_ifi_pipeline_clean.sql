@@ -32,9 +32,13 @@ SELECT
         ELSE NULL
     END AS county_label,
 
-    -- Managed/non-managed flag (counties 4=Grand Bassa, 13=Rivercess)
+    -- Managed/non-managed flag
+    -- Rivercess(13): LMH-managed for all time
+    -- Grand Bassa(4): LMH-managed only before 2026-01-01 (transferred Jan 2026)
     CASE
-        WHEN CAST(basic_info_county AS INT) IN (4, 13) THEN 1
+        WHEN CAST(basic_info_county AS INT) = 13 THEN 1
+        WHEN CAST(basic_info_county AS INT) = 4
+         AND TO_DATE(basic_info_date) < TO_DATE('2026-01-01') THEN 1
         ELSE 0
     END AS managed_county,
 

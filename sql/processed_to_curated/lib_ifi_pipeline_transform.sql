@@ -124,9 +124,10 @@
 --   lifesaving_instock_al uses this cleaned value.
 --
 -- ip | Implementing Partner
---   County-to-partner mapping:
+--   County-to-partner mapping (time-aware from Jan 2026):
 --     IRC    — Bong(2), Grand Kru(7), Lofa(8), River Gee(14)
---     LMH    — Grand Bassa(4), Rivercess(13)
+--     LMH    — Rivercess(13) [all time]
+--              Grand Bassa(4) [before 2026-01-01 only; transferred Jan 2026]
 --     CHT/WB — Gbarpolu(3), Grand Cape Mount(5), Grand Gedeh(6)
 --     Plan   — Bomi(1), Margibi(9), Maryland(10), Montserrado(11),
 --               Nimba(12), Sinoe(15)
@@ -417,7 +418,9 @@ SELECT
     -- --------------------------------------------------------
     CASE
         WHEN CAST(basic_info_county AS INT) IN (2, 7, 8, 14)          THEN 'IRC'
-        WHEN CAST(basic_info_county AS INT) IN (4, 13)                 THEN 'LMH'
+        WHEN CAST(basic_info_county AS INT) = 13                        THEN 'LMH'
+        WHEN CAST(basic_info_county AS INT) = 4
+         AND manual_date < TO_TIMESTAMP('2026-01-01')                  THEN 'LMH'
         WHEN CAST(basic_info_county AS INT) IN (3, 5, 6)               THEN 'CHT/WB'
         WHEN CAST(basic_info_county AS INT) IN (1, 9, 10, 11, 12, 15) THEN 'Plan'
         ELSE NULL
