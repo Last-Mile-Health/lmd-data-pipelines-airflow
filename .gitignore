@@ -43,3 +43,6 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Local-only AI agent house rules (see AGENTS.local.md)
+AGENTS.local.md

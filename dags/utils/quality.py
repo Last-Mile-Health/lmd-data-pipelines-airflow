@@ -18,6 +18,8 @@ def run_checks(checks: List[Dict], config: Dict, env_config: Dict) -> Dict:
     Supported check types:
         - row_count_min: Assert minimum row count
         - null_check: Assert no nulls in specified columns
+        - null_pct_max: Assert NULL pct in column is below threshold (0.0-1.0)
+        - freshness_max_hours: Assert max(timestamp_column) is within N hours of now
         - custom_sql: Run arbitrary SQL and compare result
 
     Returns:
@@ -57,6 +59,32 @@ def run_checks(checks: List[Dict], config: Dict, env_config: Dict) -> Dict:
                     result["passed"] = False
                 results.append({**result, **col_result})
             continue
+
+        elif check_type == "null_pct_max":
+            column = check["column"]
+            threshold = float(check.get("threshold", 0.05))
+            sql = (
+                f"SELECT 1.0 * SUM(CASE WHEN {column} IS NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0) "
+                f"FROM {schema}.{table}"
+            )
+            pct = _execute_and_fetch_float(redshift, sql, workgroup, database, secret_arn)
+            result["column"] = column
+            result["actual_pct"] = pct
+            result["threshold_pct"] = threshold
+            result["passed"] = pct is not None and pct <= threshold
+
+        elif check_type == "freshness_max_hours":
+            column = check["column"]
+            max_hours = float(check.get("max_hours", 48))
+            sql = (
+                f"SELECT EXTRACT(EPOCH FROM (GETDATE() - MAX({column}::timestamp))) / 3600 "
+                f"FROM {schema}.{table}"
+            )
+            age_hours = _execute_and_fetch_float(redshift, sql, workgroup, database, secret_arn)
+            result["column"] = column
+            result["age_hours"] = age_hours
+            result["max_hours"] = max_hours
+            result["passed"] = age_hours is not None and age_hours <= max_hours
 
         elif check_type == "custom_sql":
             sql = check["query"].format(table=f"{schema}.{table}")
@@ -103,3 +131,36 @@ def _execute_and_fetch(redshift_client, sql: str, workgroup: str, database: str,
     if result["Records"]:
         return int(result["Records"][0][0].get("longValue", 0))
     return 0
+
+
+def _execute_and_fetch_float(redshift_client, sql: str, workgroup: str, database: str, secret_arn: str):
+    """Execute SQL and return scalar as float (or None if NULL/empty)."""
+    response = redshift_client.execute_statement(
+        WorkgroupName=workgroup,
+        Database=database,
+        SecretArn=secret_arn,
+        Sql=sql,
+    )
+    statement_id = response["Id"]
+    while True:
+        status = redshift_client.describe_statement(Id=statement_id)
+        state = status["Status"]
+        if state == "FINISHED":
+            break
+        if state in ("FAILED", "ABORTED"):
+            raise RuntimeError(f"Redshift query failed: {status.get('Error', 'Unknown')}")
+        time.sleep(2)
+
+    result = redshift_client.get_statement_result(Id=statement_id)
+    if not result["Records"]:
+        return None
+    cell = result["Records"][0][0]
+    if cell.get("isNull"):
+        return None
+    for k in ("doubleValue", "longValue", "stringValue"):
+        if k in cell:
+            try:
+                return float(cell[k])
+            except (TypeError, ValueError):
+                return None
+    return None
