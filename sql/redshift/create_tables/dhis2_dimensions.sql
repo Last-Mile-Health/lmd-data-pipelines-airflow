@@ -23,12 +23,10 @@ CREATE TABLE IF NOT EXISTS public.dhis2_dim_orgunit (
     "parent_displayname"  VARCHAR(512)
 );
 
+-- DHIS2 stores both categoryOptionCombo and attributeOptionCombo via the
+-- same /categoryOptionCombos endpoint, so we maintain a single dim and join
+-- it twice in the BI view (see lib_dhis2_vw_bi_datavalue.sql).
 CREATE TABLE IF NOT EXISTS public.dhis2_dim_category_option (
-    "id"          VARCHAR(64),
-    "displayname" VARCHAR(512)
-);
-
-CREATE TABLE IF NOT EXISTS public.dhis2_dim_attribute_option (
     "id"          VARCHAR(64),
     "displayname" VARCHAR(512)
 );

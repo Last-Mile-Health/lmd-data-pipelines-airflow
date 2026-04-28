@@ -8,6 +8,7 @@ import os
 import re
 import glob
 import yaml
+from functools import lru_cache
 from typing import Dict, Any
 
 
@@ -58,22 +59,32 @@ def load_pipeline_config(pipeline_name: str) -> Dict[str, Any]:
         return _resolve_env_vars(yaml.safe_load(f))
 
 
-def load_all_pipeline_configs() -> Dict[str, Dict[str, Any]]:
-    """
-    Load all pipeline configs from config/pipelines/*.yml.
-
-    Returns:
-        Dict mapping pipeline_name -> config dict
-    """
-    configs = {}
+def _configs_signature() -> tuple:
+    """Cheap fingerprint of the config dir so the cache invalidates on YAML edits."""
     pattern = os.path.join(CONFIG_DIR, "*.yml")
-    for filepath in sorted(glob.glob(pattern)):
+    return tuple(sorted((p, os.path.getmtime(p)) for p in glob.glob(pattern)))
+
+
+@lru_cache(maxsize=8)
+def _load_all_cached(signature: tuple) -> Dict[str, Dict[str, Any]]:
+    configs = {}
+    for filepath, _mtime in signature:
         with open(filepath) as f:
             config = _resolve_env_vars(yaml.safe_load(f))
             if config and "pipeline" in config:
                 name = config["pipeline"]["name"]
                 configs[name] = config
     return configs
+
+
+def load_all_pipeline_configs() -> Dict[str, Dict[str, Any]]:
+    """
+    Load all pipeline configs from config/pipelines/*.yml.
+
+    Cached on (filepath, mtime) tuple so repeated scheduler heartbeats don't
+    re-parse YAML when nothing changed.
+    """
+    return _load_all_cached(_configs_signature())
 
 
 _SOURCE_LABELS = {
@@ -105,6 +116,20 @@ def build_flow_tags(config: dict) -> list:
         stage:2|Destination|RDS <dbname>.<schema>.<table>
     """
     dag_type = config.get("pipeline", {}).get("dag_type", "")
+
+    if dag_type == "dhis2_dimensions":
+        rs = config.get("redshift", {}) or {}
+        rs_db = rs.get("database", "")
+        rs_schema = rs.get("schema", "public")
+        n_dims = sum(1 for d in config.get("dimensions", []) if d.get("table"))
+        dest_detail = f"{rs_db}.{rs_schema} ({n_dims} dim tables)" if n_dims else rs_db
+        # Airflow tag length cap is 100 chars — keep this short.
+        tag = f"stage:3|Destination|Redshift {dest_detail}"[:100]
+        return [
+            "stage:1|Source|DHIS2 API (metadata)",
+            "stage:2|S3 Raw|JSONL",
+            tag,
+        ]
 
     if dag_type == "okr_redshift_to_rds":
         views = config.get("source", {}).get("views", [])

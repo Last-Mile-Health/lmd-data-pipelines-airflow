@@ -20,9 +20,12 @@ source:
     endpoint: /dataValueSets
     params:
       dataSet: "dUjJetW69xZ"               # e.g. "BfMAe6Itzgt"
-      period: "202601"                     # e.g. "2026Q1", "202601", "2026"
       orgUnit: "LHNiyIWuLdc"               # e.g. "ImspTQPwCqd" (root org unit)
       children: true                       # include child org units
+      # NOTE: 'period' is intentionally omitted.
+      #   - rolling_window: auto-computes period_list from rolling_window_months
+      #   - incremental:    uses lastUpdated cursor instead of period
+      #   - full:           must pass period via dag_run.conf.source_params.period
     page_size: 1000
     default_country: liberia
 
@@ -32,6 +35,11 @@ ingestion:
   cdc_strategy: rolling_window                    # full | incremental | rolling_window
   incremental_key: "lastUpdated"                  # used by 'incremental' strategy
   rolling_window_months: 3                        # used by 'rolling_window' strategy
+  # /dataValueSets returns the entire window in one body — large windows cause
+  # the server to drop the connection mid-stream (ChunkedEncodingError). The
+  # ingestor splits the period list into chunks of this size. Tune up if your
+  # DHIS2 instance is healthy enough to stream multi-period responses.
+  period_batch_size: 1
   partition_by:
     - country
     - year
@@ -46,7 +54,10 @@ raw:
 processed:
   glue_job_script: glue_jobs/lib_dhis2_pipeline/raw_to_processed.py
   custom_sql: sql/raw_to_processed/lib_dhis2_pipeline_clean.sql
-  deduplicate_key: null                    # set to a unique key if duplicates are possible
+  # Composite hash dedup — required for rolling_window so 3-month re-pulls
+  # don't blow up Processed/Curated S3 with duplicate rows.
+  deduplicate_key: _dedup_hash
+  deduplicate_columns: "dataelement,period,orgunit,categoryoptioncombo,attributeoptioncombo"
 
 # ── Curated Layer (Business Logic → Redshift) ──
 curated:
@@ -54,6 +65,13 @@ curated:
   custom_sql: sql/processed_to_curated/lib_dhis2_pipeline_transform.sql
 
 # ── Dimension Tables ──
+# Refresh policy: dimensions hardly change, so the dedicated dimensions DAG
+# (etl_<pipeline>_dimensions) only refreshes a dim if its DynamoDB watermark
+# is older than min_refresh_days. The fact DAG no longer triggers dim loads.
+dimensions_refresh:
+  cron: "0 6 1 * *"                        # Monthly, 1st @ 06:00 UTC
+  min_refresh_days: 25                     # Skip if last refresh < N days ago
+
 dimensions:
   - name: dhis2_dim_dataelement
     endpoint: /dataElements
@@ -92,16 +110,10 @@ dimensions:
     columns:
       - {name: id, type: "VARCHAR(64)", is_key: true}
       - {name: displayname, type: "VARCHAR(512)"}
-
-  - name: dhis2_dim_attribute_option
-    endpoint: /categoryOptionCombos
-    response_key: categoryOptionCombos
-    fields: "id,displayName"
-    table: dhis2_dim_attribute_option
-    schema: public
-    columns:
-      - {name: id, type: "VARCHAR(64)", is_key: true}
-      - {name: displayname, type: "VARCHAR(512)"}
+    # NOTE: dhis2_dim_attribute_option used to be a separate dim hitting the
+    # same /categoryOptionCombos endpoint with the same fields — duplicate
+    # API call. Use dhis2_dim_category_option for both joins (or create a
+    # Redshift view aliasing it if BI queries depend on the old name).
 
 # ── Redshift Load ──
 redshift:
@@ -127,7 +139,19 @@ schedule:
 # ── Data Quality Checks ──
 quality_checks:
   - type: row_count_min
-    threshold: 1
+    threshold: 1000                        # tune to your minimum expected weekly volume
+  - type: null_pct_max
+    column: dataelement
+    threshold: 0.01                        # < 1% nulls
+  - type: null_pct_max
+    column: period
+    threshold: 0.01
+  - type: null_pct_max
+    column: orgunit
+    threshold: 0.01
+  - type: freshness_max_hours
+    column: _ingestion_timestamp
+    max_hours: 192                         # 8 days — weekly schedule + grace
 
 # ── Alerts ──
 alerts:

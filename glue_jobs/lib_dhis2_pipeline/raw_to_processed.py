@@ -29,6 +29,7 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, ArrayType, MapType, StringType
+from pyspark.storagelevel import StorageLevel
 import boto3
 
 
@@ -96,9 +97,8 @@ def trim_string_columns(df):
     return df
 
 
-def drop_null_columns(df):
-    """Drop columns where every value is null."""
-    row_count = df.count()
+def drop_null_columns(df, row_count: int):
+    """Drop columns where every value is null. Caller passes row_count to avoid a scan."""
     if row_count == 0:
         return df
     null_counts = df.select(
@@ -142,9 +142,11 @@ if __name__ == "__main__":
         "metadata_table",
         "source_format",
     ])
-    # dedup_key is optional — parse separately
+    # Optional args — parse only if passed
     if "--dedup_key" in sys.argv:
         args["dedup_key"] = getResolvedOptions(sys.argv, ["dedup_key"])["dedup_key"]
+    if "--dedup_columns" in sys.argv:
+        args["dedup_columns"] = getResolvedOptions(sys.argv, ["dedup_columns"])["dedup_columns"]
     job.init(args["JOB_NAME"], args)
 
     dynamodb = boto3.resource("dynamodb")
@@ -164,18 +166,9 @@ if __name__ == "__main__":
         else:
             df = spark.read.option("multiLine", "true").json(args["source_path"])
 
-        row_count = df.count()
-        print(f"Read {row_count:,} records with {len(df.columns)} columns")
-        print(f"Source columns: {df.columns}")
-
-        if row_count == 0:
-            print("WARNING: Source data is empty — writing empty Parquet")
-
         # STEP 2: Explode 'results' array if present (common in API responses)
         if "results" in df.columns:
             df = df.select(F.explode("results").alias("record")).select("record.*")
-            row_count = df.count()
-            print(f"Exploded results array: {row_count:,} records")
 
         # STEP 3: Flatten nested structures
         df = flatten_dataframe(df)
@@ -190,17 +183,36 @@ if __name__ == "__main__":
         # STEP 5: Trim whitespace on all string columns
         df = trim_string_columns(df)
 
-        # STEP 6: Drop fully-null columns
-        df = drop_null_columns(df)
+        # Cache after the cheap transforms — the rest of the pipeline scans
+        # the DataFrame multiple times (drop_null_columns, dedup, write).
+        df = df.persist(StorageLevel.MEMORY_AND_DISK)
+        row_count = df.count()
+        print(f"Read {row_count:,} records with {len(df.columns)} columns")
+        if row_count == 0:
+            print("WARNING: Source data is empty — writing empty Parquet")
 
-        # STEP 7: Deduplicate
+        # STEP 6: Drop fully-null columns
+        df = drop_null_columns(df, row_count)
+
+        # STEP 7: Deduplicate.
+        # If --dedup_key is "_dedup_hash", build a composite hash from a list of
+        # columns supplied via --dedup_columns (comma-separated). This lets the
+        # rolling_window strategy dedup overlapping period pulls without having
+        # a single natural key.
         dedup_key = args.get("dedup_key", "")
+        dedup_columns = args.get("dedup_columns", "")
+        if dedup_key == "_dedup_hash" and dedup_columns:
+            cols = [c.strip() for c in dedup_columns.split(",") if c.strip() and c.strip() in df.columns]
+            if cols:
+                df = df.withColumn(
+                    "_dedup_hash",
+                    F.sha2(F.concat_ws("||", *[F.coalesce(F.col(f"`{c}`").cast("string"), F.lit("")) for c in cols]), 256),
+                )
         if dedup_key and dedup_key in df.columns:
-            before = df.count()
+            before = row_count
             df = df.dropDuplicates([dedup_key])
-            after = df.count()
-            print(f"Deduplicated on '{dedup_key}': {before:,} -> {after:,}")
-            row_count = after
+            row_count = df.count()
+            print(f"Deduplicated on '{dedup_key}': {before:,} -> {row_count:,}")
 
         # STEP 8: Add metadata columns
         df = (
@@ -235,9 +247,8 @@ if __name__ == "__main__":
         df.write.mode(write_mode).option("compression", "snappy").parquet(s3_output)
         print(f"Parquet written to: {s3_output}")
 
-        # STEP 10: Update metadata
+        # STEP 12: Update metadata (reuse pre-write row_count — no extra scan)
         col_count = len(df.columns)
-        row_count = df.count()
         metadata_table.update_item(
             Key={
                 "pipeline_name": args["pipeline_name"],

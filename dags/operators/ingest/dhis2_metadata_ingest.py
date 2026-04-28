@@ -12,6 +12,7 @@ import boto3
 from typing import Dict, Any, List
 
 from utils.s3_helpers import build_dimension_raw_path, write_jsonl_to_s3
+from operators.ingest.dhis2_ingest import build_retrying_session
 
 
 def run_dimension(
@@ -60,7 +61,8 @@ def run_dimension(
     url = f"{base_url}{endpoint}"
     print(f"[DIM] Fetching {dimension_cfg['name']} from {url}")
 
-    response = requests.get(url, headers=headers, auth=auth, params=params, timeout=300)
+    session = build_retrying_session()
+    response = session.get(url, headers=headers, auth=auth, params=params, timeout=300)
     response.raise_for_status()
     data = response.json()
 
